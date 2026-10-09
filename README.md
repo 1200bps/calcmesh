@@ -83,7 +83,7 @@ under `/calcmesh/` later.
 
 No card, or a card pulled out, and calcmesh carries on in RAM; put one in
 and logging resumes (it's on spi0, GP16-19, with card detect on GP22).
-`sd_print_status()` (for an `sd` console command) shows the state.
+`sd` on the console shows the state.
 
 ## Testing without the Pico
 

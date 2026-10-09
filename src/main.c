@@ -4,7 +4,8 @@
 // (src/ui) from the PicoCalc keyboard. The screen goes to the LCD
 // (lcd/lcd.h) and is mirrored over USB (screenport.h; tools/screen.py shows
 // it). The USB console logs the node and channel tables and messages, and
-// takes commands: `help` lists them.
+// takes commands: `help` lists them. Messages are saved to the SD card
+// (sd/sd.h) when there is one.
 
 #include <stdio.h>
 #include <string.h>
@@ -17,6 +18,7 @@
 #include "mesh/cmd.h"
 #include "meshlink.h"
 #include "screenport.h"
+#include "sd/sd.h"
 #include "ui/fb.h"
 #include "ui/ui.h"
 
@@ -73,11 +75,14 @@ static void run_command(char *line) {
         }
         printf("key echo %s, keyboard %s\n", echo_keys ? "on" : "off",
                kbd_online() ? "online" : "not answering");
+    } else if (strcmp(cmd, "sd") == 0) {
+        sd_print_status();
     } else if (strcmp(cmd, "help") == 0) {
         mesh_cmd_help();
         printf("desktop [on|off|auto]  bridge the node port to the node\n"
                "                       (auto: while a PC is using it)\n"
-               "keys [on|off]          also print PicoCalc keypresses here\n");
+               "keys [on|off]          also print PicoCalc keypresses here\n"
+               "sd                     SD card and message history state\n");
     } else {
         printf("unknown command '%s', try help\n", cmd);
     }
@@ -159,6 +164,7 @@ int main(void) {
         tud_task();
     printf("calcmesh up\n");
 
+    sd_init(); // before the link: loads saved messages into the store
     meshlink_init();
     kbd_init();
     lcd_init();
@@ -170,6 +176,7 @@ int main(void) {
         meshlink_task();
         console_task();
         kbd_task();
+        sd_task();
         ui_task();
         screenport_task();
         if (meshlink_rx_overruns() != overruns) {
