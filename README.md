@@ -106,6 +106,12 @@ driver exists. `uishot` renders it against a made-up mesh and saves PNGs:
     build-host/uishot -t shots/                          # tour of the main screens
     build-host/uishot out.png tab enter =hello left left  # press keys, save one screen
 
+The status line along the top shows your node and primary channel, then the
+link to the node (a solid square and "connected", a hollow one while
+syncing, a crossed one with "no node" when the node isn't answering, or an
+inverted DESKTOP tag while a PC has it) and the PicoCalc's own battery
+(`+` while charging, inverted at 15% and under, `usb` with no cells in).
+
 Keys for `uishot`: `tab s-tab enter esc up down left right home end pgup
 pgdn bs del f1`..`f10`, and `=TEXT` types TEXT. `-s N` scales the PNG
 (default 2).

@@ -1,6 +1,7 @@
 // A made-up but plausible mesh for rendering and testing the UI on the host.
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "link.h"
@@ -11,6 +12,7 @@
 
 // What the stand-in link (fake_link.c) reports
 extern mesh_link_state_t fake_link_state;
+extern bool fake_node_silent; // in WAKING/CONFIGURING: report no node
 extern mesh_send_result_t fake_send_result; // what sending returns
 extern uint32_t fake_epoch;                 // what mesh_link_epoch() returns
 

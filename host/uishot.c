@@ -94,11 +94,24 @@ static int tour(const char *dir) {
     err |= shot(dir, "5-chat-compose");
     key("esc"), key("down"), key("down"), key("down"), key("down"), key("enter");
     err |= shot(dir, "6-chat-dm");
+    key("f1");
+    // The status line in its other states, on the Nodes tab
+    fake_link_state = MESH_LINK_PASSIVE;
+    ui_set_battery(87, true);
+    err |= shot(dir, "7-status-desktop");
+    fake_link_state = MESH_LINK_CONFIGURING;
+    ui_set_battery(12, false);
+    err |= shot(dir, "8-status-syncing");
+    fake_link_state = MESH_LINK_READY;
+    ui_set_battery(0, false);
+    err |= shot(dir, "9-status-usb");
+    ui_set_battery(64, false);
     fake_link_state = MESH_LINK_WAKING;
+    fake_node_silent = true;
     mesh_db_clear();
     mesh_msgs_clear();
     key("f1");
-    err |= shot(dir, "7-no-node");
+    err |= shot(dir, "10-no-node");
     return err;
 }
 
@@ -115,6 +128,7 @@ int main(int argc, char **argv) {
     }
     ui_init();
     scene_load();
+    ui_set_battery(64, false);
     if (strcmp(argv[i], "-t") == 0 && i + 1 < argc)
         return tour(argv[i + 1]);
 

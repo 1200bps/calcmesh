@@ -36,6 +36,8 @@ static uint32_t nonce;
 static uint32_t state_since_ms;
 static uint32_t last_rx_ms;
 static uint32_t last_tx_ms;
+// The last handshake attempt timed out without a byte from the node.
+static bool node_silent;
 static bool db_cleared;
 static uint32_t packet_id;
 // Node clock anchor: epoch seconds seen at our clock's anchor_ms.
@@ -48,8 +50,25 @@ static void (*on_ready)(void) = mesh_db_dump;
 static meshtastic_FromRadio from_radio;
 
 // Console text from the node, collected into lines.
+//
+// When we start listening partway through a frame (the port just opened, or
+// the node was mid-packet), the rest of that frame arrives here as stray
+// bytes. Protobuf rarely gets far without a byte no text console sends, but
+// the bits before that byte, cut up by 0x0A and 0x0D bytes, can look like
+// short lines of text. So:
+// - a finished line is held, and printed once the next line also finishes
+//   cleanly or the node goes quiet for a moment;
+// - a junk byte drops the held line and everything else up to the next
+//   frame or quiet spell;
+// - a frame drops whatever stray bytes came just before it.
+#define CONSOLE_QUIET_MS 100
 static char console[128];
 static size_t console_len;
+static char console_held[sizeof console];
+static size_t console_held_len;
+static bool console_junk;
+static uint8_t console_esc;  // 1: after ESC, 2: inside an ESC [ sequence
+static uint8_t console_utf8; // UTF-8 continuation bytes still due
 
 static uint32_t now(void) { return io.now_ms(io.ctx); }
 static uint32_t msgs_clock(void) { return now(); }
@@ -102,7 +121,10 @@ void mesh_link_init(const mesh_link_io_t *io_) {
     io = *io_;
     frame_rx_init(&rx);
     memset(&stats, 0, sizeof stats);
-    console_len = 0;
+    console_len = console_held_len = 0;
+    console_junk = false;
+    console_esc = console_utf8 = 0;
+    node_silent = false;
     nonce = io.seed ^ now();
     packet_id = io.seed * 2654435761u ^ now();
     anchor_epoch = 0;
@@ -132,19 +154,89 @@ mesh_link_state_t mesh_link_state(void) { return state; }
 const mesh_link_stats_t *mesh_link_stats(void) { return &stats; }
 void mesh_link_on_ready(void (*cb)(void)) { on_ready = cb; }
 
+static void console_print_held(void) {
+    if (!console_held_len)
+        return;
+    console_held[console_held_len] = '\0';
+    printf("[node] %s\n", console_held);
+    stats.console_lines++;
+    console_held_len = 0;
+}
+
+static void console_reset_line(void) {
+    console_len = 0;
+    console_esc = console_utf8 = 0;
+}
+
+// Everything not yet printed is junk.
+static void console_drop(void) {
+    if (console_held_len || console_len || console_junk)
+        stats.console_dropped++;
+    console_held_len = 0;
+    console_reset_line();
+}
+
+static void console_end_line(void) {
+    if (!console_len)
+        return;
+    console_print_held(); // this line came after it cleanly
+    memcpy(console_held, console, console_len);
+    console_held_len = console_len;
+    console_reset_line();
+}
+
+static void console_junk_byte(void) {
+    console_drop();
+    console_junk = true;
+}
+
 static void console_byte(uint8_t b) {
-    if (b == '\n' || b == '\r' || console_len == sizeof console - 1) {
-        if (console_len) {
-            console[console_len] = '\0';
-            printf("[node] %s\n", console);
-            console_len = 0;
-        }
-        if (b == '\n' || b == '\r')
-            return;
+    // NULs turn up around node resets; skip them like the old filter did.
+    if (console_junk || b == 0)
+        return;
+    if (b == '\n' || b == '\r') {
+        console_end_line();
+        return;
     }
-    // Keep printable ASCII and UTF-8 bytes; escape-code junk is dropped.
-    if (b >= 0x20 && b != 0x7f)
-        console[console_len++] = (char)b;
+
+    // Colour codes (ESC [ ... letter) are dropped.
+    if (console_esc == 1) {
+        console_esc = b == '[' ? 2 : 0;
+        return;
+    }
+    if (console_esc == 2) {
+        if (b >= 0x40 && b <= 0x7e)
+            console_esc = 0;
+        else if (b < 0x20 || b > 0x3f)
+            console_junk_byte();
+        return;
+    }
+    if (b == 0x1b) {
+        console_esc = 1;
+        return;
+    }
+
+    if (b == '\t')
+        b = ' ';
+    if (console_utf8) {
+        if ((b & 0xc0) != 0x80) {
+            console_junk_byte();
+            return;
+        }
+        console_utf8--;
+    } else {
+        if ((b < 0x20 || b >= 0x7f) && (b < 0xc2 || b > 0xf4)) {
+            // Control bytes, DEL, stray continuation bytes, bad UTF-8 leads
+            console_junk_byte();
+            return;
+        }
+        // A long line goes out in pieces, split between characters.
+        if (console_len > sizeof console - 5)
+            console_end_line();
+        if (b >= 0xc2)
+            console_utf8 = b >= 0xf0 ? 3 : b >= 0xe0 ? 2 : 1;
+    }
+    console[console_len++] = (char)b;
 }
 
 static const char *log_level(meshtastic_LogRecord_Level l) {
@@ -378,11 +470,19 @@ static void handle_frame(const uint8_t *buf, size_t len) {
 }
 
 void mesh_link_rx(const uint8_t *data, size_t len) {
-    if (len)
+    if (len) {
+        if (now() - last_rx_ms >= CONSOLE_QUIET_MS) {
+            console_print_held();
+            console_junk = false;
+        }
         last_rx_ms = now();
+        node_silent = false;
+    }
     for (size_t i = 0; i < len; i++) {
         switch (frame_rx_push(&rx, data[i])) {
         case FRAME_RX_READY:
+            console_drop();
+            console_junk = false;
             handle_frame(rx.buf, rx.len);
             break;
         case FRAME_RX_STRAY:
@@ -396,6 +496,8 @@ void mesh_link_rx(const uint8_t *data, size_t len) {
 
 void mesh_link_poll(void) {
     uint32_t t = now();
+    if (console_held_len && t - last_rx_ms >= CONSOLE_QUIET_MS)
+        console_print_held();
     switch (state) {
     case MESH_LINK_WAKING:
         if (t - state_since_ms >= WAKE_SETTLE_MS)
@@ -408,7 +510,9 @@ void mesh_link_poll(void) {
         if ((int32_t)(last_rx_ms - since) > 0)
             since = last_rx_ms;
         if (t - since >= CONFIG_STALL_MS) {
-            printf("[link] no config_complete, retrying\n");
+            node_silent = since == state_since_ms;
+            printf("[link] %s, retrying\n",
+                   node_silent ? "no answer from the node" : "no config_complete");
             mesh_link_request_config();
         }
         break;
@@ -419,6 +523,20 @@ void mesh_link_poll(void) {
         break;
     default:
         break;
+    }
+}
+
+mesh_link_conn_t mesh_link_conn(void) {
+    switch (state) {
+    case MESH_LINK_READY:
+        return MESH_CONN_UP;
+    case MESH_LINK_PASSIVE:
+        return MESH_CONN_DESKTOP;
+    case MESH_LINK_WAKING:
+    case MESH_LINK_CONFIGURING:
+        return node_silent ? MESH_CONN_NONE : MESH_CONN_SYNCING;
+    default:
+        return MESH_CONN_NONE;
     }
 }
 

@@ -32,4 +32,9 @@ void ui_render(void);
 // in mesh_db.
 void ui_set_now(uint32_t epoch);
 
+// The PicoCalc's own battery for the status line, as kbd_battery() reports
+// it: percent, or -1 if not known yet (nothing is shown).
+//     bool chg; int pct = kbd_battery(&chg); ui_set_battery(pct, chg);
+void ui_set_battery(int percent, bool charging);
+
 ui_tab_t ui_tab(void);

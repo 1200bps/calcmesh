@@ -11,7 +11,18 @@ mesh_link_state_t fake_link_state = MESH_LINK_READY;
 mesh_send_result_t fake_send_result = MESH_SEND_OK;
 uint32_t fake_epoch;
 
+bool fake_node_silent;
+
 mesh_link_state_t mesh_link_state(void) { return fake_link_state; }
+
+mesh_link_conn_t mesh_link_conn(void) {
+    switch (fake_link_state) {
+    case MESH_LINK_READY: return MESH_CONN_UP;
+    case MESH_LINK_PASSIVE: return MESH_CONN_DESKTOP;
+    case MESH_LINK_IDLE: return MESH_CONN_NONE;
+    default: return fake_node_silent ? MESH_CONN_NONE : MESH_CONN_SYNCING;
+    }
+}
 uint32_t mesh_link_epoch(void) { return fake_epoch; }
 
 // Stores the message as link.c does, without anything to send it to.
