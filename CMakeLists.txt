@@ -20,6 +20,9 @@ include(cmake/meshtastic_protos.cmake)
 add_executable(calcmesh
     src/main.c
     src/meshlink.c
+    src/mesh/frame.c
+    src/mesh/link.c
+    src/mesh/nodedb.c
 )
 
 target_include_directories(calcmesh PRIVATE src)

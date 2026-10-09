@@ -24,10 +24,27 @@ Python 3 with the nanopb generator's dependencies:
 
 Flash `build/calcmesh.uf2` the usual way (hold BOOTSEL, copy it over).
 
+On boot it runs the `want_config` handshake with the node and prints your
+node, the channel table and the node list on the USB console.
+
+## Testing without the Pico
+
+The protocol code in `src/mesh/` builds on Linux too. `host/` has unit tests
+against a simulated node, and `meshcat`, which runs the same handshake against
+a node on a local serial port, e.g. the node's own USB port:
+
+    cmake -S host -B build-host && cmake --build build-host
+    ctest --test-dir build-host
+    build-host/meshcat -1 /dev/ttyACM0   # -1: exit after the first dump
+
 ## Layout
 
-- `src/meshlink.[ch]` – serial framing and ToRadio/FromRadio encode/decode
+- `src/mesh/frame.[ch]` – serial framing (`0x94 0xC3` + 16-bit length)
+- `src/mesh/link.[ch]` – want_config handshake, retries, heartbeat, FromRadio dispatch
+- `src/mesh/nodedb.[ch]` – in-memory node and channel tables, text dump
+- `src/meshlink.[ch]` – uart0 transport (interrupt-driven receive)
 - `src/main.c` – entry point
+- `host/` – Linux unit tests and `meshcat`
 - `cmake/meshtastic_protos.cmake` – generates nanopb C from the protobufs at build time
 - `lib/nanopb`, `lib/protobufs` – submodules ([nanopb](https://github.com/nanopb/nanopb), [meshtastic/protobufs](https://github.com/meshtastic/protobufs))
 
