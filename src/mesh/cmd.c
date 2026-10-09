@@ -168,6 +168,11 @@ bool mesh_cmd_run(char *line) {
     } else if (strcmp(cmd, "nodes") == 0) {
         mesh_db_dump();
     } else {
+        // Not ours: put back the blank word() cut at, so the caller sees
+        // the whole line.
+        size_t n = strlen(cmd);
+        if (cmd + n != rest)
+            cmd[n] = ' ';
         return false;
     }
     return true;

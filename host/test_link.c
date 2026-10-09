@@ -701,6 +701,14 @@ static void test_commands(void) {
     node_read();
     char line[128];
 
+    // Someone else's command comes back whole, arguments and all.
+    strcpy(line, "bl 64");
+    CHECK(!mesh_cmd_run(line));
+    CHECK(strcmp(line, "bl 64") == 0);
+    strcpy(line, "keys");
+    CHECK(!mesh_cmd_run(line));
+    CHECK(strcmp(line, "keys") == 0);
+
     strcpy(line, "send 1   hello  there ");
     CHECK(mesh_cmd_run(line));
     node_read();
