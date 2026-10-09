@@ -2,11 +2,30 @@
 Meshtastic client for PicoCalc
 
 Talks to a Meshtastic node over the protobuf serial API on uart0
-(GP0 = TX, GP1 = RX, 115200 8N1). The debug console is USB CDC.
+(GP0 = TX, GP1 = RX, 115200 8N1).
 
 The node needs its serial API on the UART you wire up: in the node's
 Serial module, enable it, set mode `PROTO`, 115200 baud, and the RX/TX pins
 you're using.
+
+## USB ports
+
+The Pico's micro USB shows up as two serial ports:
+
+- **console** (`/dev/serial/by-id/usb-calcmesh_Calcmesh_*-if00`, usually
+  `/dev/ttyACM0`): debug log and commands. Type `help`.
+- **node** (`...-if03`, usually `/dev/ttyACM1`): desktop mode. While a PC
+  has this port open, it's a straight pipe to the node and calcmesh only
+  listens, so the meshtastic CLI or web client works as if the node were
+  plugged in:
+
+      meshtastic --port /dev/ttyACM1 --info
+
+  When the port closes, calcmesh re-runs its handshake with the node.
+  `desktop on|off|auto` on the console forces it either way (default auto).
+
+The PicoCalc's own USB-C port can't be used to reach the node: its serial
+chip only hears GP0 (what the Pico sends), not the node's replies.
 
 ## Building
 

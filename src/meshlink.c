@@ -1,10 +1,14 @@
 #include "meshlink.h"
 
+#include <stdio.h>
+
 #include "hardware/gpio.h"
 #include "hardware/irq.h"
 #include "hardware/uart.h"
 #include "pico/rand.h"
 #include "pico/stdlib.h"
+
+#include "tusb.h"
 
 #include "mesh/link.h"
 
@@ -16,6 +20,9 @@
 static uint8_t rx_ring[RX_RING_SIZE];
 static volatile uint32_t rx_head, rx_tail; // head: IRQ writes, tail: main loop
 static volatile uint32_t rx_overruns;
+
+static meshlink_desktop_t desktop_mode = MESHLINK_DESKTOP_AUTO;
+static bool bridged;
 
 static void on_uart_rx(void) {
     while (uart_is_readable(MESHLINK_UART)) {
@@ -58,16 +65,65 @@ void meshlink_init(void) {
     mesh_link_request_config();
 }
 
+static void update_bridge(void) {
+    bool want = desktop_mode == MESHLINK_DESKTOP_ON ||
+                (desktop_mode == MESHLINK_DESKTOP_AUTO && tud_cdc_n_connected(MESHLINK_USB_CDC));
+    if (want == bridged)
+        return;
+    bridged = want;
+    printf("[desktop] %s\n", bridged ? "on: node port bridged to the node, link passive"
+                                     : "off: link resuming");
+    mesh_link_set_passive(bridged);
+}
+
+// How much of the next n received bytes can go on now. While bridged with a
+// PC listening, node bytes are held in the ring rather than dropped when the
+// USB side is full, so the PC sees an intact stream.
+static uint32_t usb_room(uint32_t n) {
+    if (!bridged || !tud_cdc_n_connected(MESHLINK_USB_CDC))
+        return n;
+    uint32_t room = tud_cdc_n_write_available(MESHLINK_USB_CDC);
+    return n < room ? n : room;
+}
+
 void meshlink_task(void) {
-    // Hand over contiguous runs of the ring.
+    update_bridge();
+
+    // PC -> node. Outside desktop mode, whatever the PC sends is discarded.
+    if (bridged) {
+        uint8_t buf[64];
+        uint32_t n;
+        while ((n = tud_cdc_n_read(MESHLINK_USB_CDC, buf, sizeof buf)) > 0)
+            uart_write_blocking(MESHLINK_UART, buf, n);
+    } else {
+        tud_cdc_n_read_flush(MESHLINK_USB_CDC);
+    }
+
+    // Node -> link (and the PC). Hand over contiguous runs of the ring.
     uint32_t head = rx_head;
     while (rx_tail != head) {
         uint32_t tail = rx_tail;
         uint32_t end = head > tail ? head : RX_RING_SIZE;
-        mesh_link_rx(&rx_ring[tail], end - tail);
-        rx_tail = end & (RX_RING_SIZE - 1);
+        uint32_t n = usb_room(end - tail);
+        if (!n)
+            break;
+        if (bridged && tud_cdc_n_connected(MESHLINK_USB_CDC))
+            tud_cdc_n_write(MESHLINK_USB_CDC, &rx_ring[tail], n);
+        mesh_link_rx(&rx_ring[tail], n);
+        rx_tail = (tail + n) & (RX_RING_SIZE - 1);
     }
+    if (bridged)
+        tud_cdc_n_write_flush(MESHLINK_USB_CDC);
+
     mesh_link_poll();
 }
+
+void meshlink_set_desktop(meshlink_desktop_t mode) {
+    desktop_mode = mode;
+    update_bridge();
+}
+
+meshlink_desktop_t meshlink_desktop(void) { return desktop_mode; }
+bool meshlink_bridged(void) { return bridged; }
 
 uint32_t meshlink_rx_overruns(void) { return rx_overruns; }
