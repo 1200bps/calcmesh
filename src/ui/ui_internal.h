@@ -13,11 +13,15 @@
 #define UI_CW 6  // cell width
 #define UI_LH 12 // line height
 
-// Screen areas
-#define UI_TABS_H 20
-#define UI_BODY_Y (UI_TABS_H + 1)
-#define UI_STATUS_Y (FB_H - UI_LH - 2) // the status line's rule
-#define UI_BODY_H (UI_STATUS_Y - UI_BODY_Y - 1)
+// Screen areas: status line on top, softkey tabs along the bottom (one
+// slot per function key, after the HP 48/49/50 menu row)
+#define UI_STATUS_RULE (UI_LH + 1)
+#define UI_BODY_Y (UI_STATUS_RULE + 2)
+#define UI_SLOTS 5
+#define UI_SLOT_W (FB_W / UI_SLOTS)
+#define UI_KEYS_H (UI_LH + 3)
+#define UI_KEYS_Y (FB_H - UI_KEYS_H)
+#define UI_BODY_H (UI_KEYS_Y - 2 - UI_BODY_Y)
 #define UI_COLS (FB_W / UI_CW)
 
 uint32_t ui_now(void);

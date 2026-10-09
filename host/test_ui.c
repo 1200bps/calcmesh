@@ -160,6 +160,8 @@ static void test_flows(void) {
     CHECK(ui_tab() == UI_TAB_NODES);
     press(KBD_F1 + 1);
     CHECK(ui_tab() == UI_TAB_CHATS);
+    press(KBD_F1 + 4); // empty slot
+    CHECK(ui_tab() == UI_TAB_CHATS);
 
     // Opening #LongFast marks it read
     mesh_conv_t lf = MESH_CONV_CHANNEL(0);

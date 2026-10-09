@@ -71,7 +71,10 @@ Keys for `uishot`: `tab s-tab enter esc up down left right home end pgup
 pgdn bs del f1`..`f10`, and `=TEXT` types TEXT. `-s N` scales the PNG
 (default 2).
 
-In the UI: Tab / Shift-Tab or F1 / F2 switch between Nodes and Chats; arrows,
+The tabs run along the bottom of the screen as five softkey slots, one over
+each of F1-F5 (Nodes and Chats so far), after the HP 48/49/50 menu row.
+
+In the UI: F1-F5 or Tab / Shift-Tab switch tabs; arrows,
 PgUp/PgDn, Home/End move; Enter opens a chat (on a node: a DM with it) or
 sends what you typed; Esc leaves a chat.
 

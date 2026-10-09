@@ -6,6 +6,8 @@
 #include "link.h"
 #include "ui_internal.h"
 
+_Static_assert(UI_TAB_COUNT <= UI_SLOTS, "one softkey per tab");
+
 static ui_tab_t tab;
 static uint32_t now_set;
 
@@ -123,43 +125,40 @@ bool ui_list_key(ui_list_t *l, int count, int rows, uint16_t key) {
 
 // --- frame -------------------------------------------------------------------
 
+// Softkey row: five equal slots, labels in boxes with clipped corners, the
+// current tab inverted. Unused slots stay empty.
 static void draw_tabs(void) {
     static const char *const names[UI_TAB_COUNT] = {"Nodes", "Chats"};
-    const ui_font_t *f = &font_8x16;
-    int x = 4;
-    int base = UI_TABS_H - 1;
+    int y = UI_KEYS_Y;
 
     for (int t = 0; t < UI_TAB_COUNT; t++) {
-        char label[24];
-        int unread = t == UI_TAB_CHATS ? ui_chats_unread() : 0;
+        char label[16];
         if (t == UI_TAB_NODES)
             snprintf(label, sizeof label, "%s %u", names[t],
                      (unsigned)mesh_db.node_count);
+        else if (t == UI_TAB_CHATS && ui_chats_unread())
+            snprintf(label, sizeof label, "%s %d", names[t],
+                     ui_chats_unread() > 99 ? 99 : ui_chats_unread());
         else
             snprintf(label, sizeof label, "%s", names[t]);
 
-        int w = (utf8_cells(label) + 2) * f->w + (unread ? 3 * UI_CW + 4 : 0);
-        if (t == (int)tab) {
-            // Folder tab: outline open at the bottom, joined to the rule
-            fb_hline(x, 1, w, FB_WHITE);
-            fb_vline(x, 1, base, FB_WHITE);
-            fb_vline(x + w - 1, 1, base, FB_WHITE);
-            fb_text(x + f->w, 3, label, -1, f, FB_WHITE, FB_CLEAR);
-            fb_hline(0, base, x + 1, FB_WHITE);
-            fb_hline(x + w - 1, base, FB_W - (x + w - 1), FB_WHITE);
-        } else {
-            fb_text(x + f->w, 3, label, -1, f, FB_GREY, FB_CLEAR);
-        }
-        if (unread) {
-            // Unread count as an inverted badge
-            char n[12];
-            snprintf(n, sizeof n, "%d", unread > 99 ? 99 : unread);
-            int bw = utf8_cells(n) * UI_CW + 4;
-            int bx = x + w - f->w - bw + 2;
-            fb_fill(bx, 5, bw, UI_LH, FB_WHITE);
-            fb_text(bx + 2, 5, n, -1, UI_FONT, FB_BLACK, FB_CLEAR);
-        }
-        x += w + 4;
+        int x = t * UI_SLOT_W + 1, w = UI_SLOT_W - 2, h = UI_KEYS_H;
+        bool cur = t == (int)tab;
+        if (cur)
+            fb_fill(x, y, w, h, FB_WHITE);
+        else
+            fb_rect(x, y, w, h, FB_GREY);
+        // Round the corners off
+        fb_pixel(x, y, FB_BLACK);
+        fb_pixel(x + w - 1, y, FB_BLACK);
+        fb_pixel(x, y + h - 1, FB_BLACK);
+        fb_pixel(x + w - 1, y + h - 1, FB_BLACK);
+
+        int cells = utf8_cells(label);
+        if (cells > w / UI_CW)
+            cells = w / UI_CW;
+        fb_text(x + (w - cells * UI_CW) / 2, y + 2, label, cells, UI_FONT,
+                cur ? FB_BLACK : FB_WHITE, FB_CLEAR);
     }
 }
 
@@ -171,9 +170,7 @@ static void draw_status(void) {
         [MESH_LINK_READY] = "ready",
         [MESH_LINK_PASSIVE] = "desktop mode",
     };
-    int y = UI_STATUS_Y;
-    fb_hline(0, y, FB_W, FB_DIM);
-    y += 2;
+    int y = 1;
 
     char left[64];
     uint32_t me = mesh_db.my_node_num;
@@ -183,8 +180,7 @@ static void draw_status(void) {
                  mesh_db_channel_name(0));
     else
         snprintf(left, sizeof left, "no node");
-    int col = 0;
-    ui_cells(col, y, 30, left, FB_WHITE, FB_CLEAR);
+    ui_cells(0, y, 30, left, FB_WHITE, FB_CLEAR);
 
     const char *s = st < sizeof states / sizeof states[0] ? states[st] : "?";
     const mesh_node_t *mine = me ? mesh_db_find(me) : NULL;
@@ -197,6 +193,8 @@ static void draw_status(void) {
         snprintf(right, sizeof right, "%s", s);
     ui_cells_right(UI_COLS - 22, y, 22, right,
                    st == MESH_LINK_READY ? FB_GREY : FB_WHITE, FB_CLEAR);
+
+    fb_hline(0, UI_STATUS_RULE, FB_W, FB_DIM);
 }
 
 void ui_render(void) {
@@ -215,13 +213,15 @@ void ui_render(void) {
 }
 
 void ui_key(const kbd_event_t *ev) {
-    // Global: switch tabs. Tab and F-keys never mean anything to a view.
+    // Global: switch tabs. Tab and F1-F5 never mean anything to a view; an
+    // F-key over an empty slot does nothing.
     if (ev->key == KBD_TAB) {
         ui_switch_tab(tab + ((ev->mods & KBD_MOD_SHIFT) ? -1 : 1));
         return;
     }
-    if (ev->key >= KBD_F1 && ev->key < KBD_F1 + UI_TAB_COUNT) {
-        ui_switch_tab(ev->key - KBD_F1);
+    if (ev->key >= KBD_F1 && ev->key < KBD_F1 + UI_SLOTS) {
+        if (ev->key < KBD_F1 + UI_TAB_COUNT)
+            ui_switch_tab(ev->key - KBD_F1);
         return;
     }
     if (tab == UI_TAB_NODES)

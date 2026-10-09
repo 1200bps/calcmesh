@@ -1,5 +1,6 @@
-// The calcmesh screen: a tab bar (Nodes, Chats), the active view, and a
-// status line, drawn into the framebuffer (fb.h). The UI reads mesh_db and
+// The calcmesh screen: a status line, the active view, and a row of five
+// softkey tabs along the bottom, one per function key (Nodes, Chats, and
+// three free slots), drawn into the framebuffer (fb.h). The UI reads mesh_db and
 // the message store and is driven by keyboard events; it never touches
 // hardware.
 //
@@ -14,6 +15,7 @@
 
 #include "input/keys.h"
 
+// Tabs, in softkey order: tab n sits over F(n+1). At most five.
 typedef enum {
     UI_TAB_NODES,
     UI_TAB_CHATS,
