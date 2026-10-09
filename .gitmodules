@@ -1,0 +1,6 @@
+[submodule "lib/nanopb"]
+	path = lib/nanopb
+	url = https://github.com/nanopb/nanopb
+[submodule "lib/protobufs"]
+	path = lib/protobufs
+	url = https://github.com/meshtastic/protobufs
