@@ -21,6 +21,7 @@ add_executable(calcmesh
     src/main.c
     src/input/kbd.c
     src/input/kbd_map.c
+    src/lcd/lcd.c
     src/meshlink.c
     src/screenport.c
     src/mesh/frame.c
@@ -47,6 +48,8 @@ target_link_libraries(calcmesh
     pico_stdlib
     hardware_uart
     hardware_i2c
+    hardware_spi
+    hardware_dma
     pico_rand
     pico_unique_id
     tinyusb_device

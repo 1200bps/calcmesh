@@ -127,6 +127,15 @@ static void test_flush(void) {
     uint16_t row[FB_W];
     fb_row_rgb565(10, row);
     CHECK(row[5] == 0xFFFF && row[4] == 0x0000);
+
+    uint8_t row666[FB_W * 3];
+    fb_row_rgb666(10, row666);
+    CHECK(row666[15] == 0xFC && row666[16] == 0xFC && row666[17] == 0xFC);
+    CHECK(row666[12] == 0 && row666[18] == 0);
+    fb_row_rgb666(100, row666);
+    CHECK(row666[9] == (fb_palette[FB_DIM][0] & 0xFC) && row666[12] == 0);
+    fb_row_rgb666(319, row666);
+    CHECK(row666[319 * 3] == (fb_palette[FB_GREY][0] & 0xFC));
 }
 
 static void press(uint16_t key) {
