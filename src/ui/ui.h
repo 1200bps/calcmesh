@@ -7,7 +7,8 @@
 // Main loop:
 //     while (kbd_get(&ev)) ui_key(&ev);
 //     ui_render();                // redraw into fb (cheap, all in RAM)
-//     fb_flush(lcd_rows, NULL);   // push only the rows that changed
+//     if (!lcd_busy())            // lcd/lcd.h: DMA, returns at once
+//         fb_flush(lcd_rows, NULL); // push only the rows that changed
 #pragma once
 
 #include <stdbool.h>

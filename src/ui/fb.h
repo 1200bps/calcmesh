@@ -4,7 +4,7 @@
 // Nothing here knows about the LCD. A display driver reads the buffer out
 // with fb_flush(), which hands it only the rows that changed since its last
 // call, and converts shades to its own pixel format with fb_palette or
-// fb_row_rgb565(). On the host, the same buffer is saved as a PNG.
+// fb_row_rgb565() / fb_row_rgb666(). On the host, the same buffer is saved as a PNG.
 #pragma once
 
 #include <stdbool.h>
@@ -56,3 +56,7 @@ void fb_invalidate(void);
 
 // One row as RGB565 (FB_W pixels), for panels that take that format.
 void fb_row_rgb565(int y, uint16_t *out);
+
+// One row as RGB666 (FB_W pixels, 3 bytes each: R, G, B with the colour in
+// bits 7-2), the only full-colour format an ILI9488 takes over 4-wire SPI.
+void fb_row_rgb666(int y, uint8_t *out);

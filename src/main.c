@@ -1,10 +1,10 @@
 // calcmesh: Meshtastic client for the PicoCalc.
 //
 // Runs the want_config handshake with the node over uart0 and drives the UI
-// (src/ui) from the PicoCalc keyboard. Until the LCD driver lands, the screen
-// goes out over USB instead (screenport.h; tools/screen.py shows it). The
-// USB console logs the node and channel tables and messages, and takes
-// commands: `help` lists them.
+// (src/ui) from the PicoCalc keyboard. The screen goes to the LCD
+// (lcd/lcd.h) and is mirrored over USB (screenport.h; tools/screen.py shows
+// it). The USB console logs the node and channel tables and messages, and
+// takes commands: `help` lists them.
 
 #include <stdio.h>
 #include <string.h>
@@ -13,6 +13,7 @@
 #include "tusb.h"
 
 #include "input/kbd.h"
+#include "lcd/lcd.h"
 #include "mesh/cmd.h"
 #include "meshlink.h"
 #include "screenport.h"
@@ -109,14 +110,14 @@ static void console_task(void) {
 }
 
 // The displays. fb_flush() reports each changed row once, so every display
-// takes it from show_rows(). The LCD driver joins here when it lands: its
-// sink in show_rows(), and its busy flag (a DMA transfer still reading the
-// framebuffer) in displays_idle().
+// takes it from show_rows(). The LCD reads the framebuffer out by DMA after
+// lcd_rows() returns, so nothing redraws until it is done.
 static void show_rows(int y0, int y1, void *ctx) {
+    lcd_rows(y0, y1, ctx);
     screenport_rows(y0, y1, ctx);
 }
 
-static bool displays_idle(void) { return true; }
+static bool displays_idle(void) { return !lcd_busy(); }
 
 // Redraw right after a keypress, otherwise this often, for things that change
 // on their own (incoming messages, link state, "heard 5m ago").
@@ -160,6 +161,7 @@ int main(void) {
 
     meshlink_init();
     kbd_init();
+    lcd_init();
     ui_init();
 
     uint32_t overruns = 0;

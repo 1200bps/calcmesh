@@ -147,3 +147,15 @@ void fb_row_rgb565(int y, uint16_t *out) {
     for (int x = 0; x < FB_W; x++)
         out[x] = lut[(fb[y][x >> 2] >> (6 - 2 * (x & 3))) & 3];
 }
+
+void fb_row_rgb666(int y, uint8_t *out) {
+    for (int i = 0; i < FB_STRIDE; i++) {
+        uint8_t b = fb[y][i];
+        for (int sh = 6; sh >= 0; sh -= 2) {
+            const uint8_t *c = fb_palette[(b >> sh) & 3];
+            *out++ = c[0] & 0xFC;
+            *out++ = c[1] & 0xFC;
+            *out++ = c[2] & 0xFC;
+        }
+    }
+}
