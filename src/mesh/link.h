@@ -23,6 +23,7 @@ typedef enum {
     MESH_LINK_WAKING,     // sent the wake preamble, about to ask for config
     MESH_LINK_CONFIGURING, // want_config sent, receiving the dump
     MESH_LINK_READY,      // config_complete received; mesh_db is populated
+    MESH_LINK_PASSIVE,    // someone else is driving the node; listen only
 } mesh_link_state_t;
 
 typedef struct {
@@ -36,6 +37,12 @@ void mesh_link_init(const mesh_link_io_t *io);
 // Start (or restart) the handshake. mesh_db is cleared once the node starts
 // answering.
 void mesh_link_request_config(void);
+
+// Passive: never write to the node (no handshake, retries or heartbeats),
+// but keep decoding what it sends so mesh_db follows along. Leaving passive
+// mode restarts the handshake, since whoever was driving may have left the
+// node's API session in any state.
+void mesh_link_set_passive(bool passive);
 
 void mesh_link_rx(const uint8_t *data, size_t len);
 void mesh_link_poll(void);

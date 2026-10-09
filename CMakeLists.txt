@@ -23,25 +23,32 @@ add_executable(calcmesh
     src/mesh/frame.c
     src/mesh/link.c
     src/mesh/nodedb.c
+    src/usb/usb_descriptors.c
 )
 
-target_include_directories(calcmesh PRIVATE src)
+# src/usb first: its tusb_config.h (two CDC ports) replaces pico_stdio_usb's.
+target_include_directories(calcmesh PRIVATE src/usb src)
 target_compile_options(calcmesh PRIVATE -Wall -Wextra)
 
 target_link_libraries(calcmesh
     pico_stdlib
     hardware_uart
     pico_rand
+    pico_unique_id
+    tinyusb_device
     meshtastic_protos
 )
 
-# Console on USB CDC. uart0 belongs to the radio link, so keep stdio off it.
+# Console on the first USB CDC port; the second is the desktop-mode bridge to
+# the node (src/usb/usb_descriptors.c). uart0 belongs to the radio link, so
+# keep stdio off it.
 pico_enable_stdio_usb(calcmesh 1)
 pico_enable_stdio_uart(calcmesh 0)
 
 # 1200-baud CDC "touch" -> BOOTSEL, and `picotool reboot -f -u` via the vendor
-# interface. These default on only while nothing links TinyUSB directly, so
-# pin them. SDK > 2.2.0 renamed them; set both spellings.
+# interface. These default on only while nothing links TinyUSB directly (we
+# do, for the second CDC port), so pin them. SDK > 2.2.0 renamed them; set
+# both spellings.
 target_compile_definitions(calcmesh PRIVATE
     PICO_ENABLE_USB_RESET_VIA_BAUD_RATE=1
     PICO_STDIO_USB_ENABLE_RESET_VIA_BAUD_RATE=1

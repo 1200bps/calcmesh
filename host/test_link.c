@@ -335,11 +335,57 @@ static void test_noise(void) {
     tx_len = 0;
 }
 
+// Desktop mode: a PC drives the node while the link only listens.
+static void test_passive(void) {
+    mesh_link_io_t io = {.write = fake_write, .now_ms = fake_now};
+    mesh_link_init(&io);
+    mesh_link_on_ready(NULL);
+    mesh_link_request_config();
+    advance(200);
+    uint32_t nonce = node_read();
+    CHECK(nonce != 0);
+
+    // The PC takes over mid-handshake.
+    mesh_link_set_passive(true);
+    CHECK(mesh_link_state() == MESH_LINK_PASSIVE);
+
+    // The PC's own dump goes by: tables follow it, its config_complete
+    // isn't ours, and a reboot notice doesn't make us talk.
+    meshtastic_FromRadio fr = fr_my_info(0xabcdef01, 2);
+    emit(&fr);
+    fr = fr_node(0x33333333, "Desk Node", "DESK", 1700000000);
+    emit(&fr);
+    fr = fr_complete(nonce + 1);
+    emit(&fr);
+    fr = (meshtastic_FromRadio)meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_rebooted_tag;
+    fr.rebooted = true;
+    emit(&fr);
+    flush_stream();
+    CHECK(mesh_db_find(0x33333333) != NULL);
+    CHECK(mesh_link_state() == MESH_LINK_PASSIVE);
+
+    // Silent for longer than every retry and heartbeat timer.
+    wake_bytes = heartbeats = 0;
+    advance(600000);
+    CHECK(tx_len == 0);
+    CHECK(node_read() == 0 && heartbeats == 0 && wake_bytes == 0);
+
+    // PC lets go: wake, then a fresh handshake.
+    mesh_link_set_passive(false);
+    CHECK(mesh_link_state() == MESH_LINK_WAKING);
+    advance(200);
+    uint32_t nonce2 = node_read();
+    CHECK(nonce2 != 0 && wake_bytes == 32);
+    CHECK(mesh_link_state() == MESH_LINK_CONFIGURING);
+}
+
 int main(void) {
     test_frame_resync();
     test_noise();
     test_handshake();
     test_eviction();
+    test_passive();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

@@ -107,6 +107,14 @@ void mesh_link_request_config(void) {
     set_state(MESH_LINK_WAKING);
 }
 
+void mesh_link_set_passive(bool passive) {
+    if (passive && state != MESH_LINK_PASSIVE) {
+        set_state(MESH_LINK_PASSIVE);
+    } else if (!passive && state == MESH_LINK_PASSIVE) {
+        mesh_link_request_config();
+    }
+}
+
 mesh_link_state_t mesh_link_state(void) { return state; }
 const mesh_link_stats_t *mesh_link_stats(void) { return &stats; }
 void mesh_link_on_ready(void (*cb)(void)) { on_ready = cb; }
@@ -194,6 +202,8 @@ static void handle_from_radio(const meshtastic_FromRadio *fr) {
             on_ready();
         break;
     case meshtastic_FromRadio_rebooted_tag:
+        if (state == MESH_LINK_PASSIVE)
+            break;
         printf("[link] node rebooted, re-requesting config\n");
         mesh_link_request_config();
         break;
