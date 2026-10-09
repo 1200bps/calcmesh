@@ -44,7 +44,7 @@ static void run_command(char *line) {
         print_desktop();
     } else if (strcmp(cmd, "help") == 0) {
         printf("desktop [on|off|auto]  bridge the node port to the node\n"
-               "                       (auto: while a PC has it open)\n");
+               "                       (auto: while a PC is using it)\n");
     } else {
         printf("unknown command '%s', try help\n", cmd);
     }

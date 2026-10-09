@@ -14,15 +14,17 @@ The Pico's micro USB shows up as two serial ports:
 
 - **console** (`/dev/serial/by-id/usb-calcmesh_Calcmesh_*-if00`, usually
   `/dev/ttyACM0`): debug log and commands. Type `help`.
-- **node** (`...-if03`, usually `/dev/ttyACM1`): desktop mode. While a PC
-  has this port open, it's a straight pipe to the node and calcmesh only
-  listens, so the meshtastic CLI or web client works as if the node were
-  plugged in:
+- **node** (`...-if03`, usually `/dev/ttyACM1`): desktop mode. Once a PC
+  starts talking on this port, it's a straight pipe to the node and calcmesh
+  only listens, so the meshtastic CLI or web client works as if the node
+  were plugged in:
 
       meshtastic --port /dev/ttyACM1 --info
 
-  When the port closes, calcmesh re-runs its handshake with the node.
-  `desktop on|off|auto` on the console forces it either way (default auto).
+  Desktop mode ends when the client sends its disconnect, the port closes,
+  or the PC goes quiet for 10 minutes; calcmesh then re-runs its handshake
+  with the node. `desktop on|off|auto` on the console forces it either way
+  (default auto).
 
 The PicoCalc's own USB-C port can't be used to reach the node: its serial
 chip only hears GP0 (what the Pico sends), not the node's replies.

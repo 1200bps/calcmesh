@@ -21,7 +21,7 @@
 #define MESHLINK_USB_CDC   1
 
 typedef enum {
-    MESHLINK_DESKTOP_AUTO, // on while a PC holds the node port open (DTR up)
+    MESHLINK_DESKTOP_AUTO, // on while a PC is using the node port (see meshlink.c)
     MESHLINK_DESKTOP_ON,   // always on
     MESHLINK_DESKTOP_OFF,  // never; the node port is ignored
 } meshlink_desktop_t;
