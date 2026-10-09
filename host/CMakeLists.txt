@@ -53,3 +53,44 @@ target_compile_definitions(test_msgs PRIVATE MESH_MSG_POOL=6 MESH_MAX_DMS=2)
 target_link_libraries(test_msgs meshtastic_protos)
 target_compile_options(test_msgs PRIVATE ${WARN})
 add_test(NAME msgs_store COMMAND test_msgs)
+
+# UI: drawn into the in-memory framebuffer, against a made-up mesh
+# (host/fake), and saved as PNG.
+#
+#   build-host/uishot -t shots/                  # tour of the main screens
+#   build-host/uishot out.png tab enter =hello   # keys, then one screen
+set(UI_SRCS
+    ${REPO_ROOT}/src/ui/fb.c
+    ${REPO_ROOT}/src/ui/font.c
+    ${REPO_ROOT}/src/ui/font_6x12.c
+    ${REPO_ROOT}/src/ui/font_8x16.c
+    ${REPO_ROOT}/src/ui/ui.c
+    ${REPO_ROOT}/src/ui/ui_nodes.c
+    ${REPO_ROOT}/src/ui/ui_chats.c)
+
+# The real message store, but link.c stays out: fake_link.c stands in for
+# its state, sending and clock.
+add_library(ui_fake STATIC ${UI_SRCS}
+    ${REPO_ROOT}/src/mesh/frame.c
+    ${REPO_ROOT}/src/mesh/msgs.c
+    ${REPO_ROOT}/src/mesh/nodedb.c
+    fake/fake_link.c
+    fake/scene.c
+    png.c)
+target_include_directories(ui_fake PUBLIC
+    ${REPO_ROOT}/src ${REPO_ROOT}/src/ui ${REPO_ROOT}/src/mesh fake .)
+target_link_libraries(ui_fake PUBLIC meshtastic_protos)
+target_compile_options(ui_fake PRIVATE ${WARN})
+
+add_executable(uishot uishot.c)
+target_link_libraries(uishot ui_fake)
+target_compile_options(uishot PRIVATE ${WARN})
+
+add_executable(test_ui test_ui.c)
+target_link_libraries(test_ui ui_fake)
+target_compile_options(test_ui PRIVATE ${WARN})
+add_test(NAME ui COMMAND test_ui)
+add_executable(test_kbd test_kbd.c ${REPO_ROOT}/src/input/kbd_map.c)
+target_include_directories(test_kbd PRIVATE ${REPO_ROOT}/src)
+target_compile_options(test_kbd PRIVATE ${WARN})
+add_test(NAME kbd COMMAND test_kbd)
