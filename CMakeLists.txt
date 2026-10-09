@@ -19,6 +19,8 @@ include(cmake/meshtastic_protos.cmake)
 
 add_executable(calcmesh
     src/main.c
+    src/input/kbd.c
+    src/input/kbd_map.c
     src/meshlink.c
     src/mesh/frame.c
     src/mesh/link.c
@@ -33,6 +35,7 @@ target_compile_options(calcmesh PRIVATE -Wall -Wextra)
 target_link_libraries(calcmesh
     pico_stdlib
     hardware_uart
+    hardware_i2c
     pico_rand
     pico_unique_id
     tinyusb_device
