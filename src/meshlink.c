@@ -1,20 +1,44 @@
 #include "meshlink.h"
 
 #include "hardware/gpio.h"
+#include "hardware/irq.h"
 #include "hardware/uart.h"
+#include "pico/rand.h"
 #include "pico/stdlib.h"
 
-#include <pb_decode.h>
-#include <pb_encode.h>
+#include "mesh/link.h"
 
-#define START1 0x94
-#define START2 0xC3
-#define MAX_PAYLOAD 512
+// The want_config dump arrives back to back at ~11.5 kB/s and the 32-byte
+// hardware FIFO lasts under 3 ms, less than one USB printf can take. So the
+// RX interrupt moves bytes into this ring and the main loop drains it.
+#define RX_RING_SIZE 4096 // power of two
 
-static enum { WAIT_START1, WAIT_START2, LEN_HI, LEN_LO, PAYLOAD } rx_state;
-static uint16_t rx_len, rx_pos;
-static uint8_t rx_buf[MAX_PAYLOAD];
-static meshlink_log_cb log_cb;
+static uint8_t rx_ring[RX_RING_SIZE];
+static volatile uint32_t rx_head, rx_tail; // head: IRQ writes, tail: main loop
+static volatile uint32_t rx_overruns;
+
+static void on_uart_rx(void) {
+    while (uart_is_readable(MESHLINK_UART)) {
+        uint8_t c = (uint8_t)uart_get_hw(MESHLINK_UART)->dr;
+        uint32_t next = (rx_head + 1) & (RX_RING_SIZE - 1);
+        if (next == rx_tail) {
+            rx_overruns++;
+            continue;
+        }
+        rx_ring[rx_head] = c;
+        rx_head = next;
+    }
+}
+
+static void uart_write(const uint8_t *data, size_t len, void *ctx) {
+    (void)ctx;
+    uart_write_blocking(MESHLINK_UART, data, len);
+}
+
+static uint32_t now_ms(void *ctx) {
+    (void)ctx;
+    return to_ms_since_boot(get_absolute_time());
+}
 
 void meshlink_init(void) {
     uart_init(MESHLINK_UART, MESHLINK_BAUD);
@@ -23,82 +47,27 @@ void meshlink_init(void) {
     uart_set_format(MESHLINK_UART, 8, 1, UART_PARITY_NONE);
     uart_set_hw_flow(MESHLINK_UART, false, false);
     uart_set_fifo_enabled(MESHLINK_UART, true);
-    rx_state = WAIT_START1;
+
+    int irq = MESHLINK_UART == uart0 ? UART0_IRQ : UART1_IRQ;
+    irq_set_exclusive_handler(irq, on_uart_rx);
+    irq_set_enabled(irq, true);
+    uart_set_irq_enables(MESHLINK_UART, true, false);
+
+    mesh_link_io_t io = {uart_write, now_ms, NULL, get_rand_32()};
+    mesh_link_init(&io);
+    mesh_link_request_config();
 }
 
-void meshlink_set_log_cb(meshlink_log_cb cb) {
-    log_cb = cb;
-}
-
-void meshlink_wake(void) {
-    // Same trick the Python client uses: a run of START2 bytes wakes the node
-    // and can never be mistaken for the start of a frame.
-    for (int i = 0; i < 32; i++)
-        uart_putc_raw(MESHLINK_UART, START2);
-    sleep_ms(100);
-}
-
-bool meshlink_send(const meshtastic_ToRadio *msg) {
-    // Static: the core 0 stack is only 2 KiB by default.
-    static uint8_t buf[4 + meshtastic_ToRadio_size];
-    pb_ostream_t os = pb_ostream_from_buffer(buf + 4, sizeof(buf) - 4);
-    if (!pb_encode(&os, meshtastic_ToRadio_fields, msg))
-        return false;
-
-    buf[0] = START1;
-    buf[1] = START2;
-    buf[2] = os.bytes_written >> 8;
-    buf[3] = os.bytes_written & 0xff;
-    uart_write_blocking(MESHLINK_UART, buf, 4 + os.bytes_written);
-    return true;
-}
-
-bool meshlink_poll(meshtastic_FromRadio *out) {
-    while (uart_is_readable(MESHLINK_UART)) {
-        uint8_t c = uart_getc(MESHLINK_UART);
-
-        switch (rx_state) {
-        case WAIT_START1:
-            if (c == START1)
-                rx_state = WAIT_START2;
-            else if (log_cb)
-                log_cb(c);
-            break;
-        case WAIT_START2:
-            if (c == START2) {
-                rx_state = LEN_HI;
-            } else if (c == START1) {
-                if (log_cb)
-                    log_cb(START1);
-            } else {
-                if (log_cb) {
-                    log_cb(START1);
-                    log_cb(c);
-                }
-                rx_state = WAIT_START1;
-            }
-            break;
-        case LEN_HI:
-            rx_len = c << 8;
-            rx_state = LEN_LO;
-            break;
-        case LEN_LO:
-            rx_len |= c;
-            rx_pos = 0;
-            // Zero or oversized length means we latched onto garbage; resync.
-            rx_state = (rx_len == 0 || rx_len > MAX_PAYLOAD) ? WAIT_START1 : PAYLOAD;
-            break;
-        case PAYLOAD:
-            rx_buf[rx_pos++] = c;
-            if (rx_pos == rx_len) {
-                rx_state = WAIT_START1;
-                pb_istream_t is = pb_istream_from_buffer(rx_buf, rx_len);
-                *out = (meshtastic_FromRadio)meshtastic_FromRadio_init_zero;
-                if (pb_decode(&is, meshtastic_FromRadio_fields, out))
-                    return true;
-            }
-            break;
-        }
+void meshlink_task(void) {
+    // Hand over contiguous runs of the ring.
+    uint32_t head = rx_head;
+    while (rx_tail != head) {
+        uint32_t tail = rx_tail;
+        uint32_t end = head > tail ? head : RX_RING_SIZE;
+        mesh_link_rx(&rx_ring[tail], end - tail);
+        rx_tail = end & (RX_RING_SIZE - 1);
     }
-    return false;
+    mesh_link_poll();
 }
+
+uint32_t meshlink_rx_overruns(void) { return rx_overruns; }

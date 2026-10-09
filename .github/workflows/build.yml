@@ -52,3 +52,25 @@ jobs:
           path: |
             build/calcmesh.uf2
             build/calcmesh.elf
+
+  host-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install nanopb generator deps
+        run: pip install -r lib/nanopb/extra/requirements.txt
+
+      - name: Build
+        run: |
+          cmake -S host -B build-host -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all"
+          cmake --build build-host
+
+      - name: Test
+        run: ctest --test-dir build-host --output-on-failure
