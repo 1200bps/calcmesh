@@ -22,16 +22,25 @@ add_executable(calcmesh
     src/input/kbd.c
     src/input/kbd_map.c
     src/meshlink.c
+    src/screenport.c
     src/mesh/frame.c
     src/mesh/link.c
     src/mesh/msgs.c
     src/mesh/cmd.c
     src/mesh/nodedb.c
+    src/ui/fb.c
+    src/ui/font.c
+    src/ui/font_6x12.c
+    src/ui/font_8x16.c
+    src/ui/ui.c
+    src/ui/ui_chats.c
+    src/ui/ui_nodes.c
     src/usb/usb_descriptors.c
 )
 
+# src/mesh: the UI includes link.h, msgs.h etc. by bare name.
 # src/usb first: its tusb_config.h (two CDC ports) replaces pico_stdio_usb's.
-target_include_directories(calcmesh PRIVATE src/usb src)
+target_include_directories(calcmesh PRIVATE src/usb src src/mesh)
 target_compile_options(calcmesh PRIVATE -Wall -Wextra)
 
 target_link_libraries(calcmesh

@@ -86,6 +86,23 @@ add_executable(uishot uishot.c)
 target_link_libraries(uishot ui_fake)
 target_compile_options(uishot PRIVATE ${WARN})
 
+# The USB screen mirror against a stand-in port, then tools/screen.py on what
+# it sent.
+add_executable(test_screenport test_screenport.c
+    ${REPO_ROOT}/src/screenport.c fake/fake_tusb.c)
+target_link_libraries(test_screenport ui_fake)
+target_compile_options(test_screenport PRIVATE ${WARN})
+add_test(NAME screenport COMMAND test_screenport)
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND)
+    set(SP_DIR ${CMAKE_CURRENT_BINARY_DIR}/screenport)
+    file(MAKE_DIRECTORY ${SP_DIR})
+    add_test(NAME screen_py COMMAND sh -c
+        "$<TARGET_FILE:test_screenport> ${SP_DIR} && \
+         ${Python3_EXECUTABLE} ${REPO_ROOT}/tools/screen.py -s 1 ${SP_DIR}/stream.bin ${SP_DIR}/got.png && \
+         ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/pngcmp.py ${SP_DIR}/expect.png ${SP_DIR}/got.png")
+endif()
+
 add_executable(test_ui test_ui.c)
 target_link_libraries(test_ui ui_fake)
 target_compile_options(test_ui PRIVATE ${WARN})
