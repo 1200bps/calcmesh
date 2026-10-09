@@ -36,5 +36,15 @@ target_link_libraries(calcmesh
 pico_enable_stdio_usb(calcmesh 1)
 pico_enable_stdio_uart(calcmesh 0)
 
+# 1200-baud CDC "touch" -> BOOTSEL, and `picotool reboot -f -u` via the vendor
+# interface. These default on only while nothing links TinyUSB directly, so
+# pin them. SDK > 2.2.0 renamed them; set both spellings.
+target_compile_definitions(calcmesh PRIVATE
+    PICO_ENABLE_USB_RESET_VIA_BAUD_RATE=1
+    PICO_STDIO_USB_ENABLE_RESET_VIA_BAUD_RATE=1
+    PICO_ENABLE_USB_RESET_VIA_VENDOR_INTERFACE=1
+    PICO_STDIO_USB_ENABLE_RESET_VIA_VENDOR_INTERFACE=1
+)
+
 pico_set_program_name(calcmesh "calcmesh")
 pico_add_extra_outputs(calcmesh)
