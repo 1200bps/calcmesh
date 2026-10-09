@@ -42,3 +42,8 @@ add_test(NAME link_small_table COMMAND test_link_small)
 add_executable(meshcat meshcat.c)
 target_link_libraries(meshcat meshlink)
 target_compile_options(meshcat PRIVATE ${WARN})
+
+add_executable(test_kbd test_kbd.c ${REPO_ROOT}/src/input/kbd_map.c)
+target_include_directories(test_kbd PRIVATE ${REPO_ROOT}/src)
+target_compile_options(test_kbd PRIVATE ${WARN})
+add_test(NAME kbd COMMAND test_kbd)
