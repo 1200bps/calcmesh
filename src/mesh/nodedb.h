@@ -60,6 +60,7 @@ typedef struct {
     bool use_preset;
     uint8_t modem_preset;
     uint8_t region;
+    uint8_t hop_limit; // 0 if the node didn't say
 
     mesh_channel_t channels[MESH_MAX_CHANNELS];
 

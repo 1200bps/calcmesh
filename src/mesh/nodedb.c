@@ -29,6 +29,7 @@ void mesh_db_set_config(const meshtastic_Config *cfg) {
     mesh_db.use_preset = l->use_preset;
     mesh_db.modem_preset = (uint8_t)l->modem_preset;
     mesh_db.region = (uint8_t)l->region;
+    mesh_db.hop_limit = (uint8_t)l->hop_limit;
 }
 
 void mesh_db_set_channel(const meshtastic_Channel *ch) {

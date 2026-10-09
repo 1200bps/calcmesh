@@ -1,8 +1,8 @@
 // calcmesh: Meshtastic client for the PicoCalc.
 //
 // Bring-up firmware for now: runs the want_config handshake with the node
-// over uart0 and prints the node and channel tables on the USB console.
-// Console commands: `desktop [on|off|auto]`, `keys [on|off]`, `help`.
+// over uart0, prints the node and channel tables on the USB console, and
+// sends and shows text messages. Console commands: `help` lists them.
 
 #include <stdio.h>
 #include <string.h>
@@ -11,6 +11,7 @@
 #include "tusb.h"
 
 #include "input/kbd.h"
+#include "mesh/cmd.h"
 #include "meshlink.h"
 
 static const char *const desktop_names[] = {
@@ -35,6 +36,8 @@ static void print_key(const kbd_event_t *ev) {
 }
 
 static void run_command(char *line) {
+    if (mesh_cmd_run(line))
+        return;
     char *cmd = strtok(line, " \t");
     char *arg = strtok(NULL, " \t");
     if (!cmd)
@@ -65,6 +68,7 @@ static void run_command(char *line) {
         printf("key echo %s, keyboard %s\n", echo_keys ? "on" : "off",
                kbd_online() ? "online" : "not answering");
     } else if (strcmp(cmd, "help") == 0) {
+        mesh_cmd_help();
         printf("desktop [on|off|auto]  bridge the node port to the node\n"
                "                       (auto: while a PC is using it)\n"
                "keys [on|off]          print PicoCalc keypresses here\n");
@@ -73,9 +77,10 @@ static void run_command(char *line) {
     }
 }
 
-// Line editing for the USB console: echo, backspace, run on Enter.
+// Line editing for the USB console: echo, backspace, run on Enter. Takes
+// UTF-8; backspace removes a whole character.
 static void console_task(void) {
-    static char line[64];
+    static char line[256];
     static size_t len;
 
     int c;
@@ -88,9 +93,10 @@ static void console_task(void) {
             len = 0;
             run_command(line);
         } else if ((c == '\b' || c == 0x7f) && len) {
-            len--;
+            while (len && ((uint8_t)line[--len] & 0xC0) == 0x80)
+                ;
             printf("\b \b");
-        } else if (c >= 0x20 && c < 0x7f && len < sizeof line - 1) {
+        } else if (c >= 0x20 && c != 0x7f && len < sizeof line - 1) {
             line[len++] = (char)c;
             putchar(c);
         }

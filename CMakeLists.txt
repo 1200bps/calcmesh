@@ -24,6 +24,8 @@ add_executable(calcmesh
     src/meshlink.c
     src/mesh/frame.c
     src/mesh/link.c
+    src/mesh/msgs.c
+    src/mesh/cmd.c
     src/mesh/nodedb.c
     src/usb/usb_descriptors.c
 )

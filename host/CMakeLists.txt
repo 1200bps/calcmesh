@@ -4,6 +4,7 @@
 #   cmake -S host -B build-host && cmake --build build-host
 #   ctest --test-dir build-host
 #   build-host/meshcat -1 /dev/ttyACM0
+#   build-host/meshcat -1 -x 'send 0 hello' /dev/ttyACM0
 cmake_minimum_required(VERSION 3.13)
 project(calcmesh_host C)
 
@@ -17,6 +18,8 @@ set(WARN -Wall -Wextra -Werror)
 set(MESH_SRCS
     ${REPO_ROOT}/src/mesh/frame.c
     ${REPO_ROOT}/src/mesh/link.c
+    ${REPO_ROOT}/src/mesh/msgs.c
+    ${REPO_ROOT}/src/mesh/cmd.c
     ${REPO_ROOT}/src/mesh/nodedb.c)
 
 add_library(meshlink STATIC ${MESH_SRCS})
@@ -43,8 +46,16 @@ add_executable(meshcat meshcat.c)
 target_link_libraries(meshcat meshlink)
 target_compile_options(meshcat PRIVATE ${WARN})
 
-# UI: drawn into the in-memory framebuffer, against a made-up mesh and a
-# stand-in message store (host/fake), and saved as PNG.
+# Message store alone, with a pool small enough to exercise eviction.
+add_executable(test_msgs test_msgs.c ${REPO_ROOT}/src/mesh/msgs.c ${REPO_ROOT}/src/mesh/nodedb.c)
+target_include_directories(test_msgs PRIVATE ${REPO_ROOT}/src/mesh)
+target_compile_definitions(test_msgs PRIVATE MESH_MSG_POOL=6 MESH_MAX_DMS=2)
+target_link_libraries(test_msgs meshtastic_protos)
+target_compile_options(test_msgs PRIVATE ${WARN})
+add_test(NAME msgs_store COMMAND test_msgs)
+
+# UI: drawn into the in-memory framebuffer, against a made-up mesh
+# (host/fake), and saved as PNG.
 #
 #   build-host/uishot -t shots/                  # tour of the main screens
 #   build-host/uishot out.png tab enter =hello   # keys, then one screen
@@ -57,12 +68,13 @@ set(UI_SRCS
     ${REPO_ROOT}/src/ui/ui_nodes.c
     ${REPO_ROOT}/src/ui/ui_chats.c)
 
-# link.c stays out: fake_link.c answers mesh_link_state() instead
+# The real message store, but link.c stays out: fake_link.c stands in for
+# its state, sending and clock.
 add_library(ui_fake STATIC ${UI_SRCS}
     ${REPO_ROOT}/src/mesh/frame.c
+    ${REPO_ROOT}/src/mesh/msgs.c
     ${REPO_ROOT}/src/mesh/nodedb.c
     fake/fake_link.c
-    fake/fake_msgs.c
     fake/scene.c
     png.c)
 target_include_directories(ui_fake PUBLIC

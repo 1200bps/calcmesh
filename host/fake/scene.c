@@ -87,6 +87,11 @@ const mesh_msg_t *scene_msg(uint32_t from, mesh_conv_t conv, uint32_t time,
     mesh_msg_t m = {0};
     m.id = ++id;
     m.from = from;
+    if (conv.peer)
+        m.to = from == SCENE_ME ? conv.peer : SCENE_ME;
+    else
+        m.to = MESH_ADDR_BROADCAST;
+    m.channel = conv.channel;
     m.rx_time = time;
     m.status = status;
     m.hops = 0xFF;
