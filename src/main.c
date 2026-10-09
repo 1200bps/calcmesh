@@ -2,7 +2,7 @@
 //
 // Bring-up firmware for now: runs the want_config handshake with the node
 // over uart0 and prints the node and channel tables on the USB console.
-// Console commands: `desktop [on|off|auto]`, `help`.
+// Console commands: `desktop [on|off|auto]`, `keys [on|off]`, `help`.
 
 #include <stdio.h>
 #include <string.h>
@@ -10,6 +10,7 @@
 #include "pico/stdlib.h"
 #include "tusb.h"
 
+#include "input/kbd.h"
 #include "meshlink.h"
 
 static const char *const desktop_names[] = {
@@ -21,6 +22,16 @@ static const char *const desktop_names[] = {
 static void print_desktop(void) {
     printf("desktop mode %s (%s)\n", desktop_names[meshlink_desktop()],
            meshlink_bridged() ? "bridged" : "not bridged");
+}
+
+// Until the UI takes the keyboard, print what it types.
+static bool echo_keys = true;
+
+static void print_key(const kbd_event_t *ev) {
+    printf("[kbd] %s%s%s%s%s\n", ev->mods & KBD_MOD_CTRL ? "Ctrl+" : "",
+           ev->mods & KBD_MOD_ALT ? "Alt+" : "",
+           ev->mods & KBD_MOD_SHIFT ? "Shift+" : "", kbd_key_name(ev->key),
+           ev->repeat ? " (repeat)" : "");
 }
 
 static void run_command(char *line) {
@@ -42,9 +53,21 @@ static void run_command(char *line) {
             meshlink_set_desktop((meshlink_desktop_t)i);
         }
         print_desktop();
+    } else if (strcmp(cmd, "keys") == 0) {
+        if (arg && strcmp(arg, "on") == 0)
+            echo_keys = true;
+        else if (arg && strcmp(arg, "off") == 0)
+            echo_keys = false;
+        else if (arg) {
+            printf("usage: keys [on|off]\n");
+            return;
+        }
+        printf("key echo %s, keyboard %s\n", echo_keys ? "on" : "off",
+               kbd_online() ? "online" : "not answering");
     } else if (strcmp(cmd, "help") == 0) {
         printf("desktop [on|off|auto]  bridge the node port to the node\n"
-               "                       (auto: while a PC is using it)\n");
+               "                       (auto: while a PC is using it)\n"
+               "keys [on|off]          print PicoCalc keypresses here\n");
     } else {
         printf("unknown command '%s', try help\n", cmd);
     }
@@ -87,12 +110,18 @@ int main(void) {
     printf("calcmesh up\n");
 
     meshlink_init();
+    kbd_init();
 
     uint32_t overruns = 0;
     for (;;) {
         tud_task();
         meshlink_task();
         console_task();
+        kbd_task();
+        kbd_event_t ev;
+        while (kbd_get(&ev))
+            if (echo_keys)
+                print_key(&ev);
         if (meshlink_rx_overruns() != overruns) {
             overruns = meshlink_rx_overruns();
             printf("[uart] rx buffer overrun, %lu bytes lost so far\n",
