@@ -10,7 +10,9 @@ library only; the live window needs tkinter.
                                 reloads, e.g. feh -R 0.5 OUT.png)
   screen.py -v PORT             live window
 
-PORT is usually /dev/serial/by-id/usb-calcmesh_Calcmesh_*-if05 (/dev/ttyACM2).
+PORT is /dev/serial/by-id/usb-calcmesh_Calcmesh_*-if05 (its ttyACM number
+depends on what else is plugged in). Opening it toggles DTR, which restarts
+the stream from a whole screen; keep one reader on it at a time.
 A regular file holding a captured stream works too. -s N scales the image
 (default 2).
 """

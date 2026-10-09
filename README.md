@@ -25,7 +25,8 @@ The Pico's micro USB shows up as three serial ports:
   or the PC goes quiet for 10 minutes; calcmesh then re-runs its handshake
   with the node. `desktop on|off|auto` on the console forces it either way
   (default auto).
-- **screen** (`...-if05`, usually `/dev/ttyACM2`): the screen, mirrored for
+- **screen** (`...-if05`; its ttyACM number depends on what else is
+  plugged in, so use the by-id name): the screen, mirrored for
   a PC to show while the LCD isn't hooked up (see below).
 
 The PicoCalc's own USB-C port can't be used to reach the node: its serial
@@ -96,10 +97,11 @@ On the PicoCalc, the same framebuffer goes out the **screen** USB port
 whenever something has the port open, and `tools/screen.py` (Python 3, no
 extra packages) shows it:
 
-    tools/screen.py -v /dev/ttyACM2              # live window (needs tkinter)
-    tools/screen.py /dev/ttyACM2 shot.png        # save one screen
-    tools/screen.py -w /dev/ttyACM2 live.png &   # keep a PNG current...
-    feh -R 0.5 live.png                          # ...for any viewer that reloads
+    SCREEN=$(ls /dev/serial/by-id/usb-calcmesh_*-if05)
+    tools/screen.py -v $SCREEN               # live window (needs tkinter)
+    tools/screen.py $SCREEN shot.png         # save one screen
+    tools/screen.py -w $SCREEN live.png &    # keep a PNG current...
+    feh -R 0.5 live.png                      # ...for any viewer that reloads
 
 Use the PicoCalc's own keyboard to drive it. Only changed rows are sent,
 nothing at all while the screen is still or the port is closed, and sending
