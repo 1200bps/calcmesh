@@ -11,8 +11,8 @@ library only; the live window needs tkinter.
   screen.py -v PORT             live window
 
 PORT is /dev/serial/by-id/usb-calcmesh_Calcmesh_*-if05 (its ttyACM number
-depends on what else is plugged in). Opening it toggles DTR, which restarts
-the stream from a whole screen; keep one reader on it at a time.
+depends on what else is plugged in). The stream restarts from a whole screen
+each time DTR comes up, so keep one reader on it at a time.
 A regular file holding a captured stream works too. -s N scales the image
 (default 2).
 """
