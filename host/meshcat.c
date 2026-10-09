@@ -184,6 +184,7 @@ int main(int argc, char **argv) {
 
     int stdin_open = 1, status = 0;
     uint32_t ready_ms = 0;
+    int waiting = 0;
     uint8_t buf[256];
     while (!done) {
         struct pollfd p[2] = {{fd, POLLIN, 0}, {0, POLLIN, 0}};
@@ -204,8 +205,10 @@ int main(int argc, char **argv) {
         mesh_link_poll();
 
         if (once && ncmds && ready) {
-            if (!ready_ms)
-                ready_ms = now_ms(NULL) | 1;
+            if (!waiting) {
+                ready_ms = now_ms(NULL);
+                waiting = 1;
+            }
             int settled = sends_settled();
             if (settled) {
                 status = settled > 1;
