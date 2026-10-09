@@ -36,13 +36,20 @@ add_executable(calcmesh
     src/ui/ui.c
     src/ui/ui_chats.c
     src/ui/ui_nodes.c
+    src/sd/msglog.c
+    src/sd/sd.c
+    src/sd/sd_card.c
     src/usb/usb_descriptors.c
+    lib/fatfs/ff.c
+    lib/fatfs/ffunicode.c
 )
 
 # src/mesh: the UI includes link.h, msgs.h etc. by bare name.
 # src/usb first: its tusb_config.h (two CDC ports) replaces pico_stdio_usb's.
-target_include_directories(calcmesh PRIVATE src/usb src src/mesh)
+target_include_directories(calcmesh PRIVATE src/usb src src/mesh lib/fatfs src/sd)
 target_compile_options(calcmesh PRIVATE -Wall -Wextra)
+# Vendored as is; not ours to warn about.
+set_source_files_properties(lib/fatfs/ff.c lib/fatfs/ffunicode.c PROPERTIES COMPILE_OPTIONS -w)
 
 target_link_libraries(calcmesh
     pico_stdlib

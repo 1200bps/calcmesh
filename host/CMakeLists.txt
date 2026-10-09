@@ -111,3 +111,17 @@ add_executable(test_kbd test_kbd.c ${REPO_ROOT}/src/input/kbd_map.c)
 target_include_directories(test_kbd PRIVATE ${REPO_ROOT}/src)
 target_compile_options(test_kbd PRIVATE ${WARN})
 add_test(NAME kbd COMMAND test_kbd)
+
+# SD card message history, on FatFs over a RAM disk, with the store built
+# small so restore has to choose what comes back.
+add_library(fatfs_host STATIC ${REPO_ROOT}/lib/fatfs/ff.c ${REPO_ROOT}/lib/fatfs/ffunicode.c)
+target_include_directories(fatfs_host PUBLIC ${REPO_ROOT}/lib/fatfs ${REPO_ROOT}/src/sd)
+target_compile_definitions(fatfs_host PUBLIC FF_USE_MKFS=1)
+
+add_executable(test_msglog test_msglog.c ramdisk.c
+    ${REPO_ROOT}/src/sd/msglog.c ${REPO_ROOT}/src/mesh/msgs.c ${REPO_ROOT}/src/mesh/nodedb.c)
+target_include_directories(test_msglog PRIVATE ${REPO_ROOT}/src ${REPO_ROOT}/src/mesh .)
+target_compile_definitions(test_msglog PRIVATE MESH_MSG_POOL=6 MESH_MAX_DMS=2)
+target_link_libraries(test_msglog fatfs_host meshtastic_protos)
+target_compile_options(test_msglog PRIVATE ${WARN})
+add_test(NAME msglog COMMAND test_msglog)
