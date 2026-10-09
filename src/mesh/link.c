@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "frame.h"
+#include "msgs.h"
 #include "nodedb.h"
 #include "pb_decode.h"
 #include "pb_encode.h"
@@ -20,6 +21,9 @@
 // Python client heartbeats every 300 s.
 #define HEARTBEAT_MS 300000
 
+// What the firmware uses when the LoRa config leaves hop_limit unset.
+#define DEFAULT_HOP_LIMIT 3
+
 // Nonces the firmware treats specially (config-only / nodes-only dumps).
 #define NONCE_ONLY_CONFIG 69420
 #define NONCE_ONLY_NODES 69421
@@ -33,6 +37,10 @@ static uint32_t state_since_ms;
 static uint32_t last_rx_ms;
 static uint32_t last_tx_ms;
 static bool db_cleared;
+static uint32_t packet_id;
+// Node clock anchor: epoch seconds seen at our clock's anchor_ms.
+static uint32_t anchor_epoch;
+static uint32_t anchor_ms;
 static void (*on_ready)(void) = mesh_db_dump;
 
 // Decode target lives in .bss: FromRadio is ~770 bytes and the core 0 stack
@@ -44,6 +52,7 @@ static char console[128];
 static size_t console_len;
 
 static uint32_t now(void) { return io.now_ms(io.ctx); }
+static uint32_t msgs_clock(void) { return now(); }
 
 static void set_state(mesh_link_state_t s) {
     state = s;
@@ -54,17 +63,18 @@ static void set_state(mesh_link_state_t s) {
 static meshtastic_ToRadio to_radio;
 static uint8_t tx_buf[FRAME_HEADER_LEN + meshtastic_ToRadio_size];
 
-static void send_to_radio(void) {
+static bool send_to_radio(void) {
     uint8_t *buf = tx_buf;
     pb_ostream_t os =
         pb_ostream_from_buffer(buf + FRAME_HEADER_LEN, sizeof tx_buf - FRAME_HEADER_LEN);
     if (!pb_encode(&os, meshtastic_ToRadio_fields, &to_radio)) {
         printf("[link] ToRadio encode failed: %s\n", PB_GET_ERROR(&os));
-        return;
+        return false;
     }
     frame_header(buf, os.bytes_written);
     io.write(buf, FRAME_HEADER_LEN + os.bytes_written, io.ctx);
     last_tx_ms = now();
+    return true;
 }
 
 static void send_want_config(void) {
@@ -94,6 +104,9 @@ void mesh_link_init(const mesh_link_io_t *io_) {
     memset(&stats, 0, sizeof stats);
     console_len = 0;
     nonce = io.seed ^ now();
+    packet_id = io.seed * 2654435761u ^ now();
+    anchor_epoch = 0;
+    mesh_msgs_set_clock(msgs_clock);
     last_rx_ms = last_tx_ms = now();
     mesh_db_clear();
     set_state(MESH_LINK_IDLE);
@@ -163,6 +176,121 @@ static void begin_dump(void) {
     }
 }
 
+static void set_status(mesh_msg_t *m, mesh_msg_status_t st, uint8_t err) {
+    uint8_t before = m->status;
+    mesh_msgs_set_status(m, st, err);
+    if (m->status != before)
+        mesh_msgs_print(m);
+}
+
+// The node lost its transmit queue: nothing still waiting will be answered.
+static void fail_in_flight(void) {
+    for (int c = 0; c < mesh_msgs_conv_count(); c++) {
+        mesh_conv_t conv = mesh_msgs_conv_at(c)->conv;
+        for (int i = 0; i < mesh_msgs_count(conv); i++) {
+            mesh_msg_t *m = (mesh_msg_t *)mesh_msgs_recent(conv, i);
+            if (m->status == MESH_MSG_QUEUED || m->status == MESH_MSG_SENT)
+                set_status(m, MESH_MSG_FAILED, meshtastic_Routing_Error_TIMEOUT);
+        }
+    }
+}
+
+static uint8_t hops_of(const meshtastic_MeshPacket *p) {
+    if (!p->hop_start || p->hop_limit > p->hop_start)
+        return 0xFF;
+    return (uint8_t)(p->hop_start - p->hop_limit);
+}
+
+static void handle_text(const meshtastic_MeshPacket *p) {
+    const meshtastic_Data *d = &p->decoded;
+    static mesh_msg_t m; // ~270 bytes; keep it off the stack
+    memset(&m, 0, sizeof m);
+    m.id = p->id;
+    m.from = p->from;
+    m.to = p->to;
+    m.channel = p->channel;
+    m.rx_time = p->has_rx_time ? p->rx_time : 0;
+    m.reply_id = d->reply_id;
+    m.emoji = d->emoji != 0;
+    m.via_mqtt = p->via_mqtt;
+    m.snr = p->rx_snr;
+    m.rssi = p->has_rx_rssi ? (int16_t)p->rx_rssi : 0;
+    m.hops = hops_of(p);
+    size_t n = d->payload.size;
+    if (n > MESH_MSG_TEXT_MAX)
+        n = MESH_MSG_TEXT_MAX;
+    memcpy(m.text, d->payload.bytes, n);
+    m.text[n] = '\0'; // also stops at an embedded NUL
+
+    mesh_conv_t conv;
+    uint32_t me = mesh_db.my_node_num;
+    if (p->from == me && me) {
+        // Sent by another client of our node (its own screen, say), echoed
+        // to us: keep it as ours. Acks for it will still find it by id.
+        m.status = MESH_MSG_SENT;
+        m.hops = 0xFF;
+        conv = p->to == MESH_ADDR_BROADCAST ? MESH_CONV_CHANNEL(p->channel)
+                                            : MESH_CONV_DM(p->to);
+    } else if (p->to == MESH_ADDR_BROADCAST) {
+        m.status = MESH_MSG_RECEIVED;
+        conv = MESH_CONV_CHANNEL(p->channel);
+    } else if (p->to == me || !me) {
+        m.status = MESH_MSG_RECEIVED;
+        conv = MESH_CONV_DM(p->from);
+    } else {
+        printf("[link] text for !%08lx, not us; ignored\n", (unsigned long)p->to);
+        return;
+    }
+    const mesh_msg_t *stored = mesh_msgs_add(conv, &m);
+    if (stored) {
+        stats.texts_rx++;
+        mesh_msgs_print(stored);
+    }
+}
+
+static void handle_routing(const meshtastic_MeshPacket *p) {
+    mesh_msg_t *m = mesh_msgs_find_outgoing(p->decoded.request_id);
+    if (!m)
+        return;
+    meshtastic_Routing r = meshtastic_Routing_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(p->decoded.payload.bytes, p->decoded.payload.size);
+    if (!pb_decode(&is, meshtastic_Routing_fields, &r) ||
+        r.which_variant != meshtastic_Routing_error_reason_tag)
+        return;
+    if (r.error_reason != meshtastic_Routing_Error_NONE)
+        set_status(m, MESH_MSG_FAILED, (uint8_t)r.error_reason);
+    else if (m->to != MESH_ADDR_BROADCAST && p->from == m->to)
+        set_status(m, MESH_MSG_DELIVERED, 0);
+    else
+        // An implicit ack: our node heard someone pass it on.
+        set_status(m, MESH_MSG_RELAYED, 0);
+}
+
+static void handle_packet(const meshtastic_MeshPacket *p) {
+    if (p->has_rx_time && p->rx_time) {
+        anchor_epoch = p->rx_time;
+        anchor_ms = now();
+    }
+    if (p->which_payload_variant != meshtastic_MeshPacket_decoded_tag) {
+        printf("[link] packet !%08lx -> !%08lx ch %u (encrypted)\n",
+               (unsigned long)p->from, (unsigned long)p->to, p->channel);
+        return;
+    }
+    switch (p->decoded.portnum) {
+    case meshtastic_PortNum_TEXT_MESSAGE_APP:
+        handle_text(p);
+        break;
+    case meshtastic_PortNum_ROUTING_APP:
+        handle_routing(p);
+        break;
+    default:
+        printf("[link] packet !%08lx -> !%08lx ch %u port %d, %u bytes\n",
+               (unsigned long)p->from, (unsigned long)p->to, p->channel,
+               p->decoded.portnum, (unsigned)p->decoded.payload.size);
+        break;
+    }
+}
+
 static void handle_from_radio(const meshtastic_FromRadio *fr) {
     switch (fr->which_payload_variant) {
     case meshtastic_FromRadio_my_info_tag:
@@ -205,6 +333,7 @@ static void handle_from_radio(const meshtastic_FromRadio *fr) {
         if (state == MESH_LINK_PASSIVE)
             break;
         printf("[link] node rebooted, re-requesting config\n");
+        fail_in_flight();
         mesh_link_request_config();
         break;
     case meshtastic_FromRadio_log_record_tag:
@@ -212,15 +341,17 @@ static void handle_from_radio(const meshtastic_FromRadio *fr) {
                fr->log_record.source, fr->log_record.source[0] ? ": " : "",
                fr->log_record.message);
         break;
-    case meshtastic_FromRadio_packet_tag: {
-        const meshtastic_MeshPacket *p = &fr->packet;
-        printf("[link] packet !%08lx -> !%08lx ch %u", (unsigned long)p->from,
-               (unsigned long)p->to, p->channel);
-        if (p->which_payload_variant == meshtastic_MeshPacket_decoded_tag)
-            printf(" port %d, %u bytes\n", p->decoded.portnum,
-                   (unsigned)p->decoded.payload.size);
-        else
-            printf(" (encrypted)\n");
+    case meshtastic_FromRadio_packet_tag:
+        handle_packet(&fr->packet);
+        break;
+    case meshtastic_FromRadio_queueStatus_tag: {
+        const meshtastic_QueueStatus *q = &fr->queueStatus;
+        mesh_msg_t *m = mesh_msgs_find_outgoing(q->mesh_packet_id);
+        if (m && q->res == 0)
+            set_status(m, MESH_MSG_SENT, 0);
+        else if (q->res != 0)
+            printf("[link] node queue error %d for packet %08lx\n", q->res,
+                   (unsigned long)q->mesh_packet_id);
         break;
     }
     case meshtastic_FromRadio_clientNotification_tag:
@@ -288,5 +419,100 @@ void mesh_link_poll(void) {
         break;
     default:
         break;
+    }
+}
+
+uint32_t mesh_link_epoch(void) {
+    if (!anchor_epoch)
+        return 0;
+    return anchor_epoch + (now() - anchor_ms) / 1000u;
+}
+
+static uint32_t next_packet_id(void) {
+    do {
+        packet_id = packet_id * 1664525u + 1013904223u;
+    } while (packet_id == 0);
+    return packet_id;
+}
+
+mesh_send_result_t mesh_link_send_text(mesh_conv_t conv, const char *text,
+                                       size_t len, uint32_t reply_id,
+                                       mesh_msg_t **out) {
+    if (out)
+        *out = NULL;
+    if (state != MESH_LINK_READY)
+        return MESH_SEND_NOT_READY;
+    if (!len)
+        return MESH_SEND_EMPTY;
+    if (len > MESH_MSG_SEND_MAX)
+        return MESH_SEND_TOO_LONG;
+    if (memchr(text, '\0', len))
+        len = strlen(text);
+    if (!conv.peer) {
+        uint8_t role = conv.channel < MESH_MAX_CHANNELS
+                           ? mesh_db.channels[conv.channel].role
+                           : meshtastic_Channel_Role_DISABLED;
+        if (role == meshtastic_Channel_Role_DISABLED)
+            return MESH_SEND_NO_CHANNEL;
+    }
+
+    memset(&to_radio, 0, sizeof to_radio);
+    to_radio.which_payload_variant = meshtastic_ToRadio_packet_tag;
+    meshtastic_MeshPacket *p = &to_radio.packet;
+    p->to = conv.peer ? conv.peer : MESH_ADDR_BROADCAST;
+    // DMs go out on the primary channel (or PKI, which the node picks).
+    p->channel = conv.peer ? 0 : conv.channel;
+    p->id = next_packet_id();
+    p->want_ack = true;
+    // The node takes this as given (and copies it to hop_start), so a 0
+    // would never be rebroadcast. Clients send the configured limit.
+    p->hop_limit = mesh_db.hop_limit ? mesh_db.hop_limit : DEFAULT_HOP_LIMIT;
+    p->which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    p->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
+    p->decoded.reply_id = reply_id;
+    memcpy(p->decoded.payload.bytes, text, len);
+    p->decoded.payload.size = (pb_size_t)len;
+
+    // Store first, so nothing goes on air that we can't track.
+    static mesh_msg_t m;
+    memset(&m, 0, sizeof m);
+    m.id = p->id;
+    m.from = mesh_db.my_node_num;
+    m.to = p->to;
+    m.channel = p->channel;
+    m.rx_time = mesh_link_epoch();
+    m.reply_id = reply_id;
+    m.hops = 0xFF;
+    m.status = MESH_MSG_QUEUED;
+    memcpy(m.text, text, len);
+    mesh_msg_t *stored = mesh_msgs_add(conv, &m);
+    if (!stored)
+        return MESH_SEND_FAILED;
+    if (!send_to_radio()) {
+        mesh_msgs_set_status(stored, MESH_MSG_FAILED, meshtastic_Routing_Error_TOO_LARGE);
+        return MESH_SEND_FAILED;
+    }
+    stats.texts_tx++;
+    if (out)
+        *out = stored;
+    return MESH_SEND_OK;
+}
+
+const char *mesh_link_send_result_name(mesh_send_result_t r) {
+    switch (r) {
+    case MESH_SEND_OK:
+        return "ok";
+    case MESH_SEND_NOT_READY:
+        return "not connected to the node";
+    case MESH_SEND_EMPTY:
+        return "empty message";
+    case MESH_SEND_TOO_LONG:
+        return "too long";
+    case MESH_SEND_NO_CHANNEL:
+        return "no such channel";
+    case MESH_SEND_FAILED:
+        return "failed";
+    default:
+        return "?";
     }
 }

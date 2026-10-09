@@ -46,7 +46,17 @@ Python 3 with the nanopb generator's dependencies:
 Flash `build/calcmesh.uf2` the usual way (hold BOOTSEL, copy it over).
 
 On boot it runs the `want_config` handshake with the node and prints your
-node, the channel table and the node list on the USB console.
+node, the channel table and the node list on the USB console. Text messages
+print there as they arrive, and the console can send them:
+
+    send 0 hello mesh        # to channel 0
+    dm HILL you up?          # DM by short name, or !a1b2c3d4
+    msgs                     # conversations, with unread counts
+    msgs HILL 20             # last 20 messages of one, marks it read
+
+Outgoing messages show their delivery as the node reports it: sending, sent
+(in the node's queue), relayed (another node rebroadcast it), delivered (DM
+acked by its destination), or failed with the reason.
 
 ## Testing without the Pico
 
@@ -57,12 +67,16 @@ a node on a local serial port, e.g. the node's own USB port:
     cmake -S host -B build-host && cmake --build build-host
     ctest --test-dir build-host
     build-host/meshcat -1 /dev/ttyACM0   # -1: exit after the first dump
+    build-host/meshcat /dev/ttyACM0      # stay up; type console commands
+    build-host/meshcat -1 -x 'send 0 test' /dev/ttyACM0  # send, wait for the ack
 
 ## Layout
 
 - `src/mesh/frame.[ch]` – serial framing (`0x94 0xC3` + 16-bit length)
 - `src/mesh/link.[ch]` – want_config handshake, retries, heartbeat, FromRadio dispatch
 - `src/mesh/nodedb.[ch]` – in-memory node and channel tables, text dump
+- `src/mesh/msgs.[ch]` – text message store: per-channel and per-DM conversations, delivery status
+- `src/mesh/cmd.[ch]` – console commands shared by the firmware and `meshcat`
 - `src/meshlink.[ch]` – uart0 transport (interrupt-driven receive)
 - `src/main.c` – entry point
 - `host/` – Linux unit tests and `meshcat`

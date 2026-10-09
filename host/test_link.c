@@ -6,7 +6,9 @@
 #include <string.h>
 
 #include "frame.h"
+#include "cmd.h"
 #include "link.h"
+#include "msgs.h"
 #include "nodedb.h"
 #include "pb_decode.h"
 #include "pb_encode.h"
@@ -39,8 +41,10 @@ static uint32_t fake_now(void *ctx) {
 }
 
 // Parse everything the link has written since last call; return the last
-// want_config nonce seen (0 if none) and count heartbeats.
-static int heartbeats, wake_bytes;
+// want_config nonce seen (0 if none), count heartbeats, and keep the last
+// MeshPacket sent.
+static int heartbeats, wake_bytes, packets;
+static meshtastic_MeshPacket last_packet;
 static uint32_t node_read(void) {
     frame_rx_t rx;
     frame_rx_init(&rx);
@@ -58,6 +62,10 @@ static uint32_t node_read(void) {
             want = m.want_config_id;
         if (m.which_payload_variant == meshtastic_ToRadio_heartbeat_tag)
             heartbeats++;
+        if (m.which_payload_variant == meshtastic_ToRadio_packet_tag) {
+            packets++;
+            last_packet = m.packet;
+        }
     }
     tx_len = 0;
     return want;
@@ -153,6 +161,7 @@ static meshtastic_FromRadio fr_lora(meshtastic_Config_LoRaConfig_ModemPreset p) 
     fr.config.payload_variant.lora.use_preset = true;
     fr.config.payload_variant.lora.modem_preset = p;
     fr.config.payload_variant.lora.region = meshtastic_Config_LoRaConfig_RegionCode_US;
+    fr.config.payload_variant.lora.hop_limit = 5;
     return fr;
 }
 
@@ -251,6 +260,7 @@ static void test_handshake(void) {
     CHECK(strcmp(mesh_db_channel_name(1), "Ops") == 0);
     CHECK(mesh_db.channels[1].psk_len == 32);
     CHECK(mesh_db.channels[2].role == meshtastic_Channel_Role_DISABLED);
+    CHECK(mesh_db.hop_limit == 5);
 
 #if MESH_MAX_NODES >= 4
     CHECK(mesh_db.node_count == 4);
@@ -380,12 +390,297 @@ static void test_passive(void) {
     CHECK(mesh_link_state() == MESH_LINK_CONFIGURING);
 }
 
+
+// ---- messaging -------------------------------------------------------------------
+
+static const uint32_t ME = 0xa1b2c3d4;
+
+// Bring the link up with channels 0 (primary), 1 ("Ops") and 2 (disabled),
+// and nodes HILL (0x11111111) and MOB (0x33333333).
+static void link_up(void) {
+    mesh_link_io_t io = {.write = fake_write, .now_ms = fake_now, .seed = 7};
+    mesh_link_init(&io);
+    mesh_msgs_clear();
+    mesh_link_on_ready(NULL);
+    mesh_link_request_config();
+    advance(200);
+    uint32_t nonce = node_read();
+    meshtastic_FromRadio fr = fr_my_info(ME, 3);
+    emit(&fr);
+    fr = fr_node(ME, "Calcmesh Base", "CALC", 1700000000);
+    emit(&fr);
+    fr = fr_node(0x11111111, "Hilltop Router", "HILL", 1700000000);
+    emit(&fr);
+    fr = fr_node(0x33333333, "Mobile", "MOB", 1700000000);
+    emit(&fr);
+    fr = fr_channel(0, meshtastic_Channel_Role_PRIMARY, "", 1);
+    emit(&fr);
+    fr = fr_channel(1, meshtastic_Channel_Role_SECONDARY, "Ops", 32);
+    emit(&fr);
+    fr = fr_channel(2, meshtastic_Channel_Role_DISABLED, "", 0);
+    emit(&fr);
+    fr = fr_complete(nonce);
+    emit(&fr);
+    flush_stream();
+    CHECK(mesh_link_state() == MESH_LINK_READY);
+}
+
+static meshtastic_FromRadio fr_text(uint32_t from, uint32_t to, uint8_t ch,
+                                    uint32_t id, const char *text) {
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_packet_tag;
+    meshtastic_MeshPacket *p = &fr.packet;
+    p->from = from;
+    p->to = to;
+    p->channel = ch;
+    p->id = id;
+    p->has_rx_time = true;
+    p->rx_time = 1700000100;
+    p->rx_snr = -7.5f;
+    p->has_rx_rssi = true;
+    p->rx_rssi = -110;
+    p->hop_start = 3;
+    p->hop_limit = 1;
+    p->which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    p->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
+    p->decoded.payload.size = (pb_size_t)strlen(text);
+    memcpy(p->decoded.payload.bytes, text, strlen(text));
+    return fr;
+}
+
+static meshtastic_FromRadio fr_routing(uint32_t from, uint32_t request_id,
+                                       meshtastic_Routing_Error err) {
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_packet_tag;
+    meshtastic_MeshPacket *p = &fr.packet;
+    p->from = from;
+    p->to = ME;
+    p->id = request_id ^ 0x5555;
+    p->which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    p->decoded.portnum = meshtastic_PortNum_ROUTING_APP;
+    p->decoded.request_id = request_id;
+    meshtastic_Routing r = meshtastic_Routing_init_zero;
+    r.which_variant = meshtastic_Routing_error_reason_tag;
+    r.error_reason = err;
+    pb_ostream_t os = pb_ostream_from_buffer(p->decoded.payload.bytes,
+                                             sizeof p->decoded.payload.bytes);
+    CHECK(pb_encode(&os, meshtastic_Routing_fields, &r));
+    p->decoded.payload.size = (pb_size_t)os.bytes_written;
+    return fr;
+}
+
+static meshtastic_FromRadio fr_queue(uint32_t id, int8_t res) {
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_queueStatus_tag;
+    fr.queueStatus.mesh_packet_id = id;
+    fr.queueStatus.res = res;
+    fr.queueStatus.free = 15;
+    fr.queueStatus.maxlen = 16;
+    return fr;
+}
+
+static void deliver(meshtastic_FromRadio fr) {
+    emit(&fr);
+    flush_stream();
+}
+
+static mesh_msg_t *send_text(mesh_conv_t conv, const char *text) {
+    mesh_msg_t *m = NULL;
+    CHECK(mesh_link_send_text(conv, text, strlen(text), 0, &m) == MESH_SEND_OK);
+    return m;
+}
+
+static void test_receive(void) {
+    link_up();
+    uint32_t v = mesh_msgs_version();
+
+    deliver(fr_text(0x11111111, MESH_ADDR_BROADCAST, 0, 100, "hello mesh"));
+    deliver(fr_text(0x33333333, ME, 0, 200, "psst"));
+    deliver(fr_text(0x11111111, MESH_ADDR_BROADCAST, 1, 101, "ops check"));
+    // The same packet again (say, after a reconnect) isn't stored twice.
+    deliver(fr_text(0x11111111, MESH_ADDR_BROADCAST, 0, 100, "hello mesh"));
+    // Addressed to someone else: ignored.
+    deliver(fr_text(0x11111111, 0x33333333, 0, 102, "not for us"));
+    // An embedded NUL ends the text.
+    deliver(fr_text(0x33333333, ME, 0, 201, "a\0b"));
+
+    CHECK(mesh_msgs_version() != v);
+    CHECK(mesh_link_stats()->texts_rx == 4);
+    CHECK(mesh_msgs_conv_count() == 3);
+    CHECK(mesh_msgs_unread_total() == 4);
+
+    // Most recently active first.
+    const mesh_conv_info_t *c = mesh_msgs_conv_at(0);
+    CHECK(c && c->conv.peer == 0x33333333 && c->count == 2 && c->unread == 2);
+    c = mesh_msgs_conv_at(1);
+    CHECK(c && c->conv.peer == 0 && c->conv.channel == 1);
+
+    const mesh_msg_t *m = mesh_msgs_recent(MESH_CONV_CHANNEL(0), 0);
+    CHECK(m && strcmp(m->text, "hello mesh") == 0 && m->len == 10);
+    CHECK(m && m->from == 0x11111111 && m->status == MESH_MSG_RECEIVED);
+    CHECK(m && m->hops == 2 && m->rssi == -110 && m->rx_time == 1700000100);
+    CHECK(mesh_msgs_count(MESH_CONV_CHANNEL(0)) == 1);
+    CHECK(mesh_msgs_recent(MESH_CONV_CHANNEL(0), 1) == NULL);
+
+    m = mesh_msgs_recent(MESH_CONV_DM(0x33333333), 0);
+    CHECK(m && strcmp(m->text, "a") == 0);
+    m = mesh_msgs_recent(MESH_CONV_DM(0x33333333), 1);
+    CHECK(m && strcmp(m->text, "psst") == 0);
+    CHECK(m && mesh_msgs_conv_of(m).peer == 0x33333333);
+
+    v = mesh_msgs_version();
+    mesh_msgs_mark_read(MESH_CONV_DM(0x33333333));
+    CHECK(mesh_msgs_version() != v);
+    CHECK(mesh_msgs_unread_total() == 2);
+
+    // Our node's clock, carried on received packets.
+    clock_ms += 30000;
+    CHECK(mesh_link_epoch() == 1700000130);
+}
+
+static void test_send(void) {
+    link_up();
+    node_read();
+    packets = 0;
+
+    // Channel message: queued, then the node takes it, then someone relays it.
+    mesh_msg_t *m = send_text(MESH_CONV_CHANNEL(1), "on my way");
+    CHECK(packets == 0);
+    node_read();
+    CHECK(packets == 1);
+    CHECK(last_packet.to == MESH_ADDR_BROADCAST && last_packet.channel == 1);
+    CHECK(last_packet.want_ack && last_packet.id != 0);
+    CHECK(last_packet.hop_limit == 3); // no LoRa config sent: the default
+    CHECK(last_packet.which_payload_variant == meshtastic_MeshPacket_decoded_tag);
+    CHECK(last_packet.decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP);
+    CHECK(last_packet.decoded.payload.size == 9 &&
+          memcmp(last_packet.decoded.payload.bytes, "on my way", 9) == 0);
+    CHECK(m && m->id == last_packet.id && m->from == ME);
+    CHECK(m && m->status == MESH_MSG_QUEUED);
+    CHECK(mesh_msgs_unread_total() == 0); // our own messages aren't unread
+    uint32_t id1 = last_packet.id;
+
+    deliver(fr_queue(id1, 0));
+    CHECK(m->status == MESH_MSG_SENT);
+    deliver(fr_routing(ME, id1, meshtastic_Routing_Error_NONE));
+    CHECK(m->status == MESH_MSG_RELAYED);
+    CHECK(strcmp(mesh_msgs_status_name(m), "relayed") == 0);
+
+    // DM: relayed, then the destination acks; a late relay can't undo that.
+    m = send_text(MESH_CONV_DM(0x33333333), "you there?");
+    node_read();
+    CHECK(last_packet.to == 0x33333333 && last_packet.channel == 0);
+    uint32_t id2 = last_packet.id;
+    CHECK(id2 != id1);
+    deliver(fr_routing(ME, id2, meshtastic_Routing_Error_NONE));
+    CHECK(m->status == MESH_MSG_RELAYED);
+    deliver(fr_routing(0x33333333, id2, meshtastic_Routing_Error_NONE));
+    CHECK(m->status == MESH_MSG_DELIVERED);
+    deliver(fr_routing(ME, id2, meshtastic_Routing_Error_NONE));
+    CHECK(m->status == MESH_MSG_DELIVERED);
+
+    // DM that never gets through.
+    m = send_text(MESH_CONV_DM(0x11111111), "hello?");
+    node_read();
+    deliver(fr_routing(ME, last_packet.id, meshtastic_Routing_Error_MAX_RETRANSMIT));
+    CHECK(m->status == MESH_MSG_FAILED);
+    CHECK(strcmp(mesh_msgs_status_name(m), "failed: no ack") == 0);
+    // An ack for an id we never sent is ignored.
+    deliver(fr_routing(ME, 0xdeadbeef, meshtastic_Routing_Error_NONE));
+
+    // Refusals, none of which put anything on the wire.
+    mesh_msg_t *none;
+    char big[MESH_MSG_SEND_MAX + 2];
+    memset(big, 'x', sizeof big);
+    CHECK(mesh_link_send_text(MESH_CONV_CHANNEL(2), "x", 1, 0, &none) == MESH_SEND_NO_CHANNEL);
+    CHECK(none == NULL);
+    CHECK(mesh_link_send_text(MESH_CONV_CHANNEL(9), "x", 1, 0, NULL) == MESH_SEND_NO_CHANNEL);
+    CHECK(mesh_link_send_text(MESH_CONV_CHANNEL(0), "", 0, 0, NULL) == MESH_SEND_EMPTY);
+    CHECK(mesh_link_send_text(MESH_CONV_CHANNEL(0), big, MESH_MSG_SEND_MAX + 1, 0, NULL) ==
+          MESH_SEND_TOO_LONG);
+    CHECK(mesh_link_send_text(MESH_CONV_CHANNEL(0), big, MESH_MSG_SEND_MAX, 0, NULL) ==
+          MESH_SEND_OK);
+    mesh_link_set_passive(true);
+    CHECK(mesh_link_send_text(MESH_CONV_CHANNEL(0), "x", 1, 0, NULL) == MESH_SEND_NOT_READY);
+    mesh_link_set_passive(false);
+    advance(200);
+    node_read();
+    CHECK(packets == 4);
+    CHECK(mesh_link_stats()->texts_tx == 4);
+
+    // Replies carry reply_id.
+    link_up();
+    node_read();
+    CHECK(mesh_link_send_text(MESH_CONV_CHANNEL(0), "+1", 2, 1234, &m) == MESH_SEND_OK);
+    node_read();
+    CHECK(last_packet.decoded.reply_id == 1234 && m->reply_id == 1234);
+
+    // Our own node's other client sent something: shows up as ours.
+    deliver(fr_text(ME, MESH_ADDR_BROADCAST, 0, 300, "from the node itself"));
+    m = (mesh_msg_t *)mesh_msgs_recent(MESH_CONV_CHANNEL(0), 0);
+    CHECK(m && m->status == MESH_MSG_SENT && m->from == ME);
+    CHECK(mesh_msgs_unread_total() == 0);
+
+    // A node reboot loses its queue: anything in flight fails.
+    mesh_msg_t *pending = send_text(MESH_CONV_CHANNEL(1), "lost");
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_rebooted_tag;
+    fr.rebooted = true;
+    deliver(fr);
+    CHECK(pending->status == MESH_MSG_FAILED);
+    CHECK(m->status == MESH_MSG_FAILED);
+    node_read();
+}
+
+static void test_commands(void) {
+    link_up();
+    node_read();
+    char line[128];
+
+    strcpy(line, "send 1   hello  there ");
+    CHECK(mesh_cmd_run(line));
+    node_read();
+    CHECK(last_packet.channel == 1 && last_packet.to == MESH_ADDR_BROADCAST);
+    CHECK(last_packet.decoded.payload.size == 12 &&
+          memcmp(last_packet.decoded.payload.bytes, "hello  there", 12) == 0);
+
+    strcpy(line, "dm hill yo");
+    CHECK(mesh_cmd_run(line));
+    node_read();
+    CHECK(last_packet.to == 0x11111111);
+
+    strcpy(line, "dm !33333333 hey");
+    CHECK(mesh_cmd_run(line));
+    node_read();
+    CHECK(last_packet.to == 0x33333333);
+
+    packets = 0;
+    strcpy(line, "dm nobody hey");
+    CHECK(mesh_cmd_run(line));
+    strcpy(line, "send 2 disabled");
+    CHECK(mesh_cmd_run(line));
+    strcpy(line, "send");
+    CHECK(mesh_cmd_run(line));
+    node_read();
+    CHECK(packets == 0);
+
+    strcpy(line, "msgs");
+    CHECK(mesh_cmd_run(line));
+    strcpy(line, "msgs mob 5");
+    CHECK(mesh_cmd_run(line));
+    strcpy(line, "desktop on");
+    CHECK(!mesh_cmd_run(line));
+}
+
 int main(void) {
     test_frame_resync();
     test_noise();
     test_handshake();
     test_eviction();
     test_passive();
+    test_receive();
+    test_send();
+    test_commands();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
