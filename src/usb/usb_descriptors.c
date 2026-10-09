@@ -3,10 +3,12 @@
 //   interfaces 0-1  CDC "calcmesh console"  stdio (printf, console commands)
 //   interface  2    reset                   picotool reboot -u
 //   interfaces 3-4  CDC "calcmesh node"     raw bridge to the node (desktop mode)
+//   interfaces 5-6  CDC "calcmesh screen"   framebuffer mirror (screenport.h)
 //
 // The reset interface stays at 2 because the SDK's Microsoft OS 2.0
 // descriptor (reset_interface.c) hardcodes that number. On Linux the ports are
-// /dev/serial/by-id/usb-calcmesh_*-if00 (console) and ...-if03 (node).
+// /dev/serial/by-id/usb-calcmesh_*-if00 (console), ...-if03 (node) and
+// ...-if05 (screen).
 
 #include "tusb.h"
 
@@ -26,6 +28,8 @@ enum {
     ITF_RESET,
     ITF_NODE,
     ITF_NODE_DATA,
+    ITF_SCREEN,
+    ITF_SCREEN_DATA,
     ITF_COUNT,
 };
 
@@ -37,6 +41,7 @@ enum {
     STR_CONSOLE,
     STR_RESET,
     STR_NODE,
+    STR_SCREEN,
     STR_COUNT,
 };
 
@@ -46,9 +51,12 @@ enum {
 #define EP_NODE_NOTIF 0x83
 #define EP_NODE_OUT 0x04
 #define EP_NODE_IN 0x84
+#define EP_SCREEN_NOTIF 0x85
+#define EP_SCREEN_OUT 0x06
+#define EP_SCREEN_IN 0x86
 
 #define RESET_DESC_LEN 9
-#define CONFIG_LEN (TUD_CONFIG_DESC_LEN + 2 * TUD_CDC_DESC_LEN + RESET_DESC_LEN)
+#define CONFIG_LEN (TUD_CONFIG_DESC_LEN + 3 * TUD_CDC_DESC_LEN + RESET_DESC_LEN)
 
 static const tusb_desc_device_t desc_device = {
     .bLength = sizeof(tusb_desc_device_t),
@@ -76,6 +84,8 @@ static const uint8_t desc_config[CONFIG_LEN] = {
     9, TUSB_DESC_INTERFACE, ITF_RESET, 0, 0, TUSB_CLASS_VENDOR_SPECIFIC,
     RESET_INTERFACE_SUBCLASS, RESET_INTERFACE_PROTOCOL, STR_RESET,
     TUD_CDC_DESCRIPTOR(ITF_NODE, STR_NODE, EP_NODE_NOTIF, 8, EP_NODE_OUT, EP_NODE_IN, 64),
+    TUD_CDC_DESCRIPTOR(ITF_SCREEN, STR_SCREEN, EP_SCREEN_NOTIF, 8, EP_SCREEN_OUT,
+                       EP_SCREEN_IN, 64),
 };
 
 static char serial_str[PICO_UNIQUE_BOARD_ID_SIZE_BYTES * 2 + 1];
@@ -87,6 +97,7 @@ static const char *const strings[STR_COUNT] = {
     [STR_CONSOLE] = "calcmesh console",
     [STR_RESET] = "Reset",
     [STR_NODE] = "calcmesh node",
+    [STR_SCREEN] = "calcmesh screen",
 };
 
 const uint8_t *tud_descriptor_device_cb(void) {

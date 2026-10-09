@@ -1,8 +1,10 @@
 // calcmesh: Meshtastic client for the PicoCalc.
 //
-// Bring-up firmware for now: runs the want_config handshake with the node
-// over uart0, prints the node and channel tables on the USB console, and
-// sends and shows text messages. Console commands: `help` lists them.
+// Runs the want_config handshake with the node over uart0 and drives the UI
+// (src/ui) from the PicoCalc keyboard. Until the LCD driver lands, the screen
+// goes out over USB instead (screenport.h; tools/screen.py shows it). The
+// USB console logs the node and channel tables and messages, and takes
+// commands: `help` lists them.
 
 #include <stdio.h>
 #include <string.h>
@@ -13,6 +15,9 @@
 #include "input/kbd.h"
 #include "mesh/cmd.h"
 #include "meshlink.h"
+#include "screenport.h"
+#include "ui/fb.h"
+#include "ui/ui.h"
 
 static const char *const desktop_names[] = {
     [MESHLINK_DESKTOP_AUTO] = "auto",
@@ -25,8 +30,8 @@ static void print_desktop(void) {
            meshlink_bridged() ? "bridged" : "not bridged");
 }
 
-// Until the UI takes the keyboard, print what it types.
-static bool echo_keys = true;
+// Also print keypresses on the console (they go to the UI either way).
+static bool echo_keys;
 
 static void print_key(const kbd_event_t *ev) {
     printf("[kbd] %s%s%s%s%s\n", ev->mods & KBD_MOD_CTRL ? "Ctrl+" : "",
@@ -71,7 +76,7 @@ static void run_command(char *line) {
         mesh_cmd_help();
         printf("desktop [on|off|auto]  bridge the node port to the node\n"
                "                       (auto: while a PC is using it)\n"
-               "keys [on|off]          print PicoCalc keypresses here\n");
+               "keys [on|off]          also print PicoCalc keypresses here\n");
     } else {
         printf("unknown command '%s', try help\n", cmd);
     }
@@ -103,8 +108,46 @@ static void console_task(void) {
     }
 }
 
+// The displays. fb_flush() reports each changed row once, so every display
+// takes it from show_rows(). The LCD driver joins here when it lands: its
+// sink in show_rows(), and its busy flag (a DMA transfer still reading the
+// framebuffer) in displays_idle().
+static void show_rows(int y0, int y1, void *ctx) {
+    screenport_rows(y0, y1, ctx);
+}
+
+static bool displays_idle(void) { return true; }
+
+// Redraw right after a keypress, otherwise this often, for things that change
+// on their own (incoming messages, link state, "heard 5m ago").
+#define UI_REFRESH_MS 100
+
+static void ui_task(void) {
+    static absolute_time_t next;
+    static bool due = true;
+    kbd_event_t ev;
+    while (kbd_get(&ev)) {
+        if (echo_keys)
+            print_key(&ev);
+        ui_key(&ev);
+        due = true;
+    }
+    if (time_reached(next))
+        due = true;
+    // Not while a display is still reading the framebuffer out
+    if (!due || !displays_idle())
+        return;
+    due = false;
+    next = make_timeout_time_ms(UI_REFRESH_MS);
+    // The clock for "heard 5m ago" is the node's (mesh_link_epoch()), which
+    // the UI reads by itself; ui_set_now() is for a better source, if one
+    // turns up.
+    ui_render();
+    fb_flush(show_rows, NULL);
+}
+
 int main(void) {
-    // We bring up TinyUSB ourselves for the second CDC port; stdio_usb then
+    // We bring up TinyUSB ourselves for the extra CDC ports; stdio_usb then
     // uses the first one and leaves tud_task() to us.
     tusb_init();
     stdio_init_all();
@@ -117,6 +160,7 @@ int main(void) {
 
     meshlink_init();
     kbd_init();
+    ui_init();
 
     uint32_t overruns = 0;
     for (;;) {
@@ -124,10 +168,8 @@ int main(void) {
         meshlink_task();
         console_task();
         kbd_task();
-        kbd_event_t ev;
-        while (kbd_get(&ev))
-            if (echo_keys)
-                print_key(&ev);
+        ui_task();
+        screenport_task();
         if (meshlink_rx_overruns() != overruns) {
             overruns = meshlink_rx_overruns();
             printf("[uart] rx buffer overrun, %lu bytes lost so far\n",

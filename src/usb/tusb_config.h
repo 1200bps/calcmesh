@@ -1,6 +1,6 @@
-// TinyUSB device config: two CDC ports (console, node bridge) plus the SDK's
-// reset interface. Replaces pico_stdio_usb's built-in config, which only has
-// one CDC; see usb_descriptors.c for the layout.
+// TinyUSB device config: three CDC ports (console, node bridge, screen mirror)
+// plus the SDK's reset interface. Replaces pico_stdio_usb's built-in config,
+// which only has one CDC; see usb_descriptors.c for the layout.
 #pragma once
 
 // pico_stdio_usb's reset_interface.c gets its PICO_STDIO_USB_* defaults
@@ -9,9 +9,10 @@
 
 #define CFG_TUSB_RHPORT0_MODE OPT_MODE_DEVICE
 
-#define CFG_TUD_CDC 2
+#define CFG_TUD_CDC 3
 #define CFG_TUD_CDC_RX_BUFSIZE 256
-#define CFG_TUD_CDC_TX_BUFSIZE 1024 // node -> PC; the want_config dump is bursty
+#define CFG_TUD_CDC_TX_BUFSIZE 1024 // node -> PC: the want_config dump is bursty;
+                                    // screen: 12 rows per buffer
 #define CFG_TUD_CDC_EP_BUFSIZE 64
 
 // The reset interface has its own driver (pico_stdio_usb's reset_interface.c);
