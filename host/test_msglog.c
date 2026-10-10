@@ -449,7 +449,8 @@ static void test_channel_names(void) {
     rx(MESH_CONV_CHANNEL(1), 0xa1, "hike one");
     mesh_msg_t *out = tx(MESH_CONV_CHANNEL(0), "lf mine");
     flush_all();
-    CHECK(slurp(MSGLOG_DIR "/ch0.tsv") && slurp(MSGLOG_DIR "/ch1.tsv"));
+    FILINFO fi;
+    CHECK(f_stat(MSGLOG_DIR "/ch0.tsv", &fi) == FR_OK && f_stat(MSGLOG_DIR "/ch1.tsv", &fi) == FR_OK);
 
     // Boot: restored by index, then the node says what its channels are.
     CHECK(reboot() == 3);
@@ -457,7 +458,8 @@ static void test_channel_names(void) {
     node_channels(0, 1);
     rx(MESH_CONV_CHANNEL(1), 0xa1, "hike queued"); // still bound for ch1.tsv
     CHECK(msglog_sync_channels() == 1);
-    CHECK(!slurp(MSGLOG_DIR "/ch0.tsv") && !slurp(MSGLOG_DIR "/ch1.tsv"));
+    CHECK(f_stat(MSGLOG_DIR "/ch0.tsv", &fi) == FR_NO_FILE &&
+          f_stat(MSGLOG_DIR "/ch1.tsv", &fi) == FR_NO_FILE);
     char *f = slurp(p_hk);
     CHECK(f && count_lines(f) == 3 && strstr(f, "\thike queued\n"));
     free(f);
@@ -505,9 +507,7 @@ static void test_channel_names(void) {
     CHECK(msglog_sync_channels() == 1);
     CHECK(mesh_msgs_conv(MESH_CONV_CHANNEL(1)) == NULL);
     CHECK(strcmp(text_at(MESH_CONV_CHANNEL(0), 0), "lf two") == 0);
-    f = slurp(p_hk);
-    CHECK(f != NULL);
-    free(f);
+    CHECK(f_stat(p_hk, &fi) == FR_OK);
     mesh_db_clear();
 }
 
