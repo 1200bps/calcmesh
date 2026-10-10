@@ -22,7 +22,8 @@ set(MESH_SRCS
     ${REPO_ROOT}/src/mesh/cmd.c
     ${REPO_ROOT}/src/mesh/nodedb.c
     ${REPO_ROOT}/src/mesh/nodeedit.c
-    ${REPO_ROOT}/src/mesh/remoteadmin.c)
+    ${REPO_ROOT}/src/mesh/remoteadmin.c
+    ${REPO_ROOT}/src/mesh/metrics.c)
 
 add_library(meshlink STATIC ${MESH_SRCS})
 target_include_directories(meshlink PUBLIC ${REPO_ROOT}/src/mesh)
@@ -70,6 +71,7 @@ set(UI_SRCS
     ${REPO_ROOT}/src/ui/ui_nodes.c
     ${REPO_ROOT}/src/ui/ui_chats.c
     ${REPO_ROOT}/src/ui/ui_position.c
+    ${REPO_ROOT}/src/ui/ui_metrics.c
     ${REPO_ROOT}/src/ui/ui_settings.c)
 
 # FatFs, for the SD card code; ramdisk.c is its disk
@@ -86,6 +88,7 @@ add_library(ui_fake STATIC ${UI_SRCS}
     ${REPO_ROOT}/src/mesh/nodedb.c
     ${REPO_ROOT}/src/mesh/nodeedit.c
     ${REPO_ROOT}/src/mesh/remoteadmin.c
+    ${REPO_ROOT}/src/mesh/metrics.c
     ${REPO_ROOT}/src/sd/settings.c
     fake/fake_link.c
     fake/fake_sd.c

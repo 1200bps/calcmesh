@@ -7,6 +7,7 @@
 #include <strings.h>
 
 #include "link.h"
+#include "metrics.h"
 #include "msgs.h"
 #include "nodedb.h"
 
@@ -33,8 +34,14 @@ static char *word(char **rest) {
     return w;
 }
 
-// "!a1b2c3d4", "0xa1b2c3d4", a decimal node number, or a short name.
+// A short name, "!a1b2c3d4", "0xa1b2c3d4", or a decimal node number. Short
+// names come first: they can start with digits ("12Tc").
 static uint32_t parse_node(const char *s) {
+    for (int i = 0; i < mesh_db.node_count; i++) {
+        const mesh_node_t *n = &mesh_db.nodes[i];
+        if (n->has_user && strcasecmp(n->short_name, s) == 0)
+            return n->num;
+    }
     char *end;
     unsigned long v;
     if (s[0] == '!') {
@@ -48,11 +55,6 @@ static uint32_t parse_node(const char *s) {
     if (isdigit((unsigned char)s[0])) {
         v = strtoul(s, &end, 10);
         return *end ? 0 : (uint32_t)v;
-    }
-    for (int i = 0; i < mesh_db.node_count; i++) {
-        const mesh_node_t *n = &mesh_db.nodes[i];
-        if (n->has_user && strcasecmp(n->short_name, s) == 0)
-            return n->num;
     }
     return 0;
 }
@@ -167,6 +169,35 @@ bool mesh_cmd_run(char *line) {
         show_conv(conv, count ? atoi(count) : MSGS_DEFAULT);
     } else if (strcmp(cmd, "nodes") == 0) {
         mesh_db_dump();
+    } else if (strcmp(cmd, "metrics") == 0 || strcmp(cmd, "telreq") == 0) {
+        bool req = cmd[0] == 't';
+        char *who = word(&rest);
+        uint32_t node = who ? parse_node(who) : mesh_db.my_node_num;
+        if (req && !who) {
+            printf("usage: telreq <node> [device|env|power|local]\n");
+            return true;
+        }
+        if (!node) {
+            printf("unknown node '%s'\n", who ? who : "(ours: not synced yet)");
+            return true;
+        }
+        if (!req) {
+            mesh_metrics_dump(node);
+            return true;
+        }
+        char *what = word(&rest);
+        met_kind_t k = MET_DEVICE;
+        if (what && what[0] == 'e')
+            k = MET_ENV;
+        else if (what && what[0] == 'p')
+            k = MET_POWER;
+        else if (what && what[0] == 'l')
+            k = MET_LOCAL;
+        if (mesh_metrics_request(node, k))
+            printf("asked !%08lx for %s; 'metrics %s' shows the answer\n", (unsigned long)node,
+                   mesh_metrics_kind_name(k), who);
+        else
+            printf("not sent: not connected to the node\n");
     } else {
         // Not ours: put back the blank word() cut at, so the caller sees
         // the whole line.
@@ -183,5 +214,8 @@ void mesh_cmd_help(void) {
            "dm <node> <text>       direct message; node is !id or short name\n"
            "msgs [<ch|node> [n]]   list conversations, or show the last n\n"
            "                       messages of one (and mark it read)\n"
-           "nodes                  node and channel tables\n");
+           "nodes                  node and channel tables\n"
+           "metrics [node]         telemetry we have from a node (default: ours)\n"
+           "telreq <node> [what]   ask a node for device, env, power or local\n"
+           "                       stats (transmits unless it's our own node)\n");
 }

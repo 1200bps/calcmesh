@@ -1,10 +1,12 @@
 // Framebuffer primitives, UTF-8 handling, and UI flows driven by key events
 // against the made-up mesh in fake/scene.c.
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "mesh/nodeedit.h"
 #include "mesh/remoteadmin.h"
+#include "metrics.h"
 #include "msgs.h"
 #include "fb.h"
 #include "sd/settings.h"
@@ -172,11 +174,14 @@ static void test_flows(void) {
     CHECK(ui_tab() == UI_TAB_NODES);
     press(KBD_F1 + 1);
     CHECK(ui_tab() == UI_TAB_CHATS);
-    press(KBD_F1 + 3); // empty slot
-    CHECK(ui_tab() == UI_TAB_CHATS);
+    press(KBD_F1 + 3);
+    CHECK(ui_tab() == UI_TAB_METRICS);
+    press(KBD_F1 + 1);
     press(KBD_TAB);
     CHECK(ui_tab() == UI_TAB_POSITION);
-    press(KBD_TAB); // skips the empty slot
+    press(KBD_TAB);
+    CHECK(ui_tab() == UI_TAB_METRICS);
+    press(KBD_TAB);
     CHECK(ui_tab() == UI_TAB_SETTINGS);
     press(KBD_TAB);
     CHECK(ui_tab() == UI_TAB_NODES);
@@ -549,6 +554,69 @@ static void test_remote_tab(void) {
 }
 
 // A full table with long, odd names, rendered under the sanitizers
+static void test_metrics_tab(void) {
+    ui_init();
+    scene_load();
+    press(KBD_F1 + 3);
+    CHECK(ui_tab() == UI_TAB_METRICS);
+    // Our own node is first; its page asks it without the radio
+    press(KBD_ENTER);
+    int before = fake_tel_sent;
+    type("L");
+    CHECK(fake_tel_sent == before + 1);
+    CHECK(fake_tel_to == SCENE_ME && fake_tel_variant == meshtastic_Telemetry_local_stats_tag);
+    CHECK(mesh_metrics_req_state() == MET_REQ_WAITING);
+    CHECK(scene_telemetry_answer(0));
+    CHECK(mesh_metrics_req_state() == MET_REQ_DONE);
+    // Scrolling and stepping through nodes, then back to the list
+    press(KBD_END);
+    press(KBD_PGUP);
+    press(KBD_RIGHT);
+    type("e");
+    CHECK(fake_tel_to != SCENE_ME && fake_tel_variant == meshtastic_Telemetry_environment_metrics_tag);
+    CHECK(scene_telemetry_answer(0)); // answered with "no response"
+    CHECK(mesh_metrics_req_state() == MET_REQ_FAILED);
+    press(KBD_ESC);
+    press(KBD_ENTER); // Enter in the list opens a page, not a DM
+    CHECK(ui_tab() == UI_TAB_METRICS);
+    press(KBD_ESC);
+    // No link: asking fails at once
+    fake_link_state = MESH_LINK_PASSIVE;
+    press(KBD_ENTER);
+    type("d");
+    CHECK(mesh_metrics_req_error() == MET_ERR_NO_LINK);
+    fake_link_state = MESH_LINK_READY;
+    press(KBD_ESC);
+
+    // Nonsense numbers draw without trouble
+    meshtastic_Telemetry t = meshtastic_Telemetry_init_zero;
+    t.which_variant = meshtastic_Telemetry_device_metrics_tag;
+    meshtastic_DeviceMetrics *d = &t.variant.device_metrics;
+    d->has_battery_level = d->has_voltage = d->has_channel_utilization = true;
+    d->has_air_util_tx = d->has_uptime_seconds = true;
+    for (int i = 0; i < MESH_METRICS_HIST * 2; i++) {
+        d->battery_level = i % 3 ? 4000000000u : 0;
+        d->voltage = i % 4 == 0 ? NAN : i % 4 == 1 ? INFINITY : i % 4 == 2 ? -5 : 1e9f;
+        d->channel_utilization = i % 2 ? -NAN : 1e30f;
+        d->air_util_tx = -INFINITY;
+        d->uptime_seconds = 0xFFFFFFFFu;
+        mesh_metrics_add(SCENE_ME, &t, SCENE_NOW + (uint32_t)i * MESH_METRICS_GAP_S);
+    }
+    t = (meshtastic_Telemetry)meshtastic_Telemetry_init_zero;
+    t.which_variant = meshtastic_Telemetry_environment_metrics_tag;
+    meshtastic_EnvironmentMetrics *v = &t.variant.environment_metrics;
+    v->has_temperature = v->has_iaq = v->has_soil_moisture = v->has_wind_direction = true;
+    v->temperature = 1e38f;
+    v->iaq = 65535;
+    v->soil_moisture = 255;
+    v->wind_direction = 65535;
+    mesh_metrics_add(SCENE_ME, &t, SCENE_NOW + 99999);
+    press(KBD_HOME);
+    press(KBD_ENTER);
+    press(KBD_END);
+    press(KBD_HOME);
+}
+
 static void test_stress(void) {
     ui_init();
     scene_load();
@@ -584,6 +652,10 @@ static void test_stress(void) {
     press(KBD_END);
     press(KBD_F1 + 2);
     type("nnnnp++++--------c0");
+    press(KBD_F1 + 3);
+    press(KBD_END);
+    press(KBD_ENTER);
+    press(KBD_END);
 }
 
 int main(void) {
@@ -595,6 +667,7 @@ int main(void) {
     test_settings_tab();
     test_remote_tab();
     test_position();
+    test_metrics_tab();
     test_stress();
     if (failures)
         fprintf(stderr, "%d failure(s)\n", failures);

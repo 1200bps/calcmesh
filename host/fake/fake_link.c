@@ -167,3 +167,21 @@ const char *mesh_link_send_result_name(mesh_send_result_t r) {
     };
     return (unsigned)r < 6 ? names[r] : "?";
 }
+
+// Telemetry requests: the last one waits until fake_telemetry_answer()
+uint32_t fake_tel_to, fake_tel_id;
+pb_size_t fake_tel_variant;
+int fake_tel_sent;
+
+bool mesh_link_send_telemetry_req(uint32_t to, pb_size_t variant, uint32_t *id) {
+    if (fake_link_state != MESH_LINK_READY)
+        return false;
+    static uint32_t next_id = 0xa000;
+    fake_tel_to = to;
+    fake_tel_variant = variant;
+    fake_tel_id = ++next_id;
+    fake_tel_sent++;
+    if (id)
+        *id = fake_tel_id;
+    return true;
+}

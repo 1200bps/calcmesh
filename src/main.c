@@ -19,6 +19,7 @@
 #include "input/kbd.h"
 #include "lcd/lcd.h"
 #include "mesh/cmd.h"
+#include "mesh/metrics.h"
 #include "mesh/nodeedit.h"
 #include "meshlink.h"
 #include "screenport.h"
@@ -276,6 +277,7 @@ int main(void) {
         apply_settings();
         chime_task();
         mesh_edit_poll();
+        mesh_metrics_poll();
         ui_task();
         screenport_task();
         if (meshlink_rx_overruns() != overruns) {
