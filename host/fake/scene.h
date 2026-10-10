@@ -6,6 +6,7 @@
 
 #include "link.h"
 #include "msgs.h"
+#include "nodeedit.h"
 
 #define SCENE_NOW 1791590400u // the wall clock the scene is set at
 #define SCENE_ME 0xa1b2c3d4u
@@ -18,6 +19,13 @@ extern uint32_t fake_epoch;                 // what mesh_link_epoch() returns
 extern mesh_link_stats_t fake_link_stats;   // what mesh_link_stats() returns
 extern uint32_t fake_ms;                    // mesh_link_ms()
 extern int fake_admin_sent;                 // admin messages "sent"
+// Remote admin: the fake remote node's settings, a routing error it answers
+// with instead (0: none), and messages sent to it. fake_remote_answer()
+// answers the one waiting; false if none is.
+extern mesh_edit_t fake_remote;
+extern int fake_remote_error;
+extern int fake_remote_sent;
+bool fake_remote_answer(void);
 extern int fake_sd_state;                   // sd_state(): sd_state_t
 
 void scene_load(void);           // nodes, channels and messages

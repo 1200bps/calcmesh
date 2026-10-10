@@ -149,6 +149,16 @@ one edit transaction; the node saves them and restarts, and calcmesh reads
 everything back and says whether it all took. calcmesh's own settings take
 effect at once and are saved to the SD card.
 
+The top row, "Settings of", picks another node to manage over the mesh
+(remote admin): our node first, then favorites, then any other node whose
+public key we have. Nothing is sent until "Fetch", which asks it for its
+settings one message at a time (a dozen or so packets). Edits then work the
+same way, and a write goes over the mesh with the node's session key, then
+calcmesh waits for it to restart and reads the changes back. The other node
+only listens if our node's public key is one of its admin keys
+(Security > Admin key in the phone app). The Settings tab shows our key in
+base64 under our own node's settings, so you can paste it there.
+
 Position (F3) plots every node that has shared a position as a point on a
 blank, north-up plane around our own node (a hollow square), labelled with
 short names and fading with time since heard; there are no maps. Arrows
@@ -183,6 +193,7 @@ to convert a row to its pixel format.
 - `src/mesh/nodedb.[ch]` – in-memory node and channel tables, text dump
 - `src/mesh/msgs.[ch]` – text message store: per-channel and per-DM conversations, delivery status
 - `src/mesh/nodeedit.[ch]` – editing the node's settings over the admin API, and checking they took
+- `src/mesh/remoteadmin.[ch]` – another node's settings over the mesh (PKI admin, session key, one message at a time)
 - `src/mesh/cmd.[ch]` – console commands shared by the firmware and `meshcat`
 - `src/sd/msglog.[ch]` – message history on the card (portable; host-tested on a RAM disk)
 - `src/sd/settings.[ch]` – client settings in `/calcmesh/settings.txt` (portable; host-tested)

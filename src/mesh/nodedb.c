@@ -131,6 +131,7 @@ mesh_node_t *mesh_db_upsert_node(const meshtastic_NodeInfo *ni) {
         COPY_STR(n->short_name, ni->user.short_name);
         n->hw_model = (uint16_t)ni->user.hw_model;
         n->role = (uint8_t)ni->user.role;
+        n->has_key = ni->user.public_key.size == 32;
     }
     if (!n->id[0])
         snprintf(n->id, sizeof n->id, "!%08lx", (unsigned long)ni->num);

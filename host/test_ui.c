@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "mesh/nodeedit.h"
+#include "mesh/remoteadmin.h"
 #include "msgs.h"
 #include "fb.h"
 #include "sd/settings.h"
@@ -264,8 +265,8 @@ static void test_settings_tab(void) {
     CHECK(ui_tab() == UI_TAB_SETTINGS);
     ui_render();
 
-    // Rows: long name, short name, role, NodeInfo, region, ...
-    downs(4);
+    // Rows: whose settings, long name, short name, role, NodeInfo, region, ...
+    downs(5);
     press(KBD_RIGHT);
     CHECK(mesh_edit.lora.region == meshtastic_Config_LoRaConfig_RegionCode_EU_433);
     CHECK(mesh_edit_base.lora.region == meshtastic_Config_LoRaConfig_RegionCode_US);
@@ -287,6 +288,7 @@ static void test_settings_tab(void) {
 
     // Text: Enter edits, Tab and F-keys stay in the field, Esc cancels
     press(KBD_HOME);
+    press(KBD_DOWN); // past whose settings
     press(KBD_ENTER);
     press(KBD_TAB);
     press(KBD_F1);
@@ -340,18 +342,19 @@ static void test_settings_tab(void) {
     CHECK(mesh_edit_base.lora.region == meshtastic_Config_LoRaConfig_RegionCode_EU_433);
     press(KBD_UP);
     CHECK(mesh_edit_state() == MESH_EDIT_DONE); // still showing
-    downs(2); // role
+    press(KBD_HOME);
+    downs(3); // role
     press(KBD_RIGHT); // the next change clears it
     CHECK(mesh_edit_state() == MESH_EDIT_IDLE);
     press(KBD_LEFT);
 
     // Comes back without it: flagged
     press(KBD_HOME);
-    downs(6);
+    downs(7);
     press(KBD_RIGHT); // hop limit 3 -> 4
     CHECK(mesh_edit.lora.hop_limit == 4);
     press(KBD_HOME);
-    downs(18);
+    downs(19);
     press(KBD_ENTER);
     press('y');
     node_back();
@@ -363,7 +366,7 @@ static void test_settings_tab(void) {
     fake_admin_sent = 0;
     fake_link_state = MESH_LINK_PASSIVE;
     press(KBD_HOME);
-    downs(6);
+    downs(7);
     press(KBD_RIGHT);
     CHECK(mesh_edit.lora.hop_limit == 3);
     CHECK(!mesh_edit_write());
@@ -372,7 +375,7 @@ static void test_settings_tab(void) {
 
     // calcmesh's own: change at once, and get saved
     press(KBD_HOME);
-    downs(18); // past Bluetooth: no Write row now
+    downs(19); // past Bluetooth: no Write row now
     int lcd = settings_get_int(SET_SCREEN_BACKLIGHT, -1);
     press(KBD_RIGHT);
     CHECK(settings_get_int(SET_SCREEN_BACKLIGHT, -1) == lcd + 16);
@@ -454,6 +457,91 @@ static void test_position(void) {
     ui_render();
 }
 
+// Let the fake remote node answer until the job is done (or 200 rounds)
+static void remote_run(void) {
+    for (int i = 0; i < 200 && ra_state() == RA_BUSY; i++) {
+        if (!fake_remote_answer())
+            fake_ms += 1000; // waiting (for the restart)
+        mesh_edit_poll();
+        ui_render();
+    }
+}
+
+static void test_remote_tab(void) {
+    ui_init();
+    scene_load();
+    mesh_edit_poll();
+    press(KBD_F1 + 4);
+    press(KBD_HOME); // whose settings
+    press(KBD_ENTER);
+    ui_render();
+    // Ours, then favorites by last heard (Ridge 40s, Hilltop 10m, Library
+    // 40m), then the rest; Enter picks
+    press(KBD_DOWN);
+    fake_remote_sent = 0;
+    press(KBD_F1); // the picker holds the keys
+    CHECK(ui_tab() == UI_TAB_SETTINGS);
+    press(KBD_ENTER);
+    CHECK(mesh_edit_target() == scene_node(0));
+    CHECK(mesh_edit_available() == 0);
+    CHECK(fake_remote_sent == 0); // nothing on air until asked
+    ui_render();
+
+    // Enter again (it's on Fetch now): asks, a message at a time
+    press(KBD_ENTER);
+    CHECK(ra_state() == RA_BUSY);
+    ui_render();
+    remote_run();
+    CHECK(ra_state() == RA_DONE);
+    CHECK(strcmp(mesh_edit_base.owner.long_name, "Ridge Repeater") == 0);
+    CHECK(mesh_edit_base.lora.tx_power == 27);
+    CHECK(fake_remote_sent == 10); // metadata, owner, 5 configs, channels 0-2
+
+    // Hop limit: whose, long, short, role, NodeInfo, region, preset, hops
+    press(KBD_HOME);
+    downs(7);
+    press(KBD_RIGHT);
+    CHECK(mesh_edit.lora.hop_limit == 5);
+    // tx power, transmit, 2 channels, gps, interval, smart, fixed, power, bt
+    downs(11);
+    press(KBD_ENTER);
+    ui_render();
+    press('y');
+    CHECK(mesh_edit_state() == MESH_EDIT_RESTARTING);
+    press(KBD_HOME);
+    press(KBD_ENTER); // can't switch nodes mid-write: no picker
+    press(KBD_F1);
+    CHECK(ui_tab() == UI_TAB_NODES);
+    press(KBD_F1 + 4);
+    remote_run();
+    CHECK(mesh_edit_state() == MESH_EDIT_DONE);
+    CHECK(fake_remote.lora.hop_limit == 5 && mesh_edit_base.lora.hop_limit == 5);
+    ui_render();
+
+    // Refused: the remote node doesn't have our key
+    fake_remote_error = meshtastic_Routing_Error_ADMIN_PUBLIC_KEY_UNAUTHORIZED;
+    press(KBD_HOME);
+    downs(7);
+    press(KBD_RIGHT);
+    downs(11);
+    press(KBD_ENTER);
+    press('y');
+    remote_run();
+    CHECK(mesh_edit_state() == MESH_EDIT_REFUSED);
+    CHECK(mesh_edit.lora.hop_limit == 6); // kept, to try again
+    ui_render();
+    fake_remote_error = 0;
+
+    // Back to our own node
+    press(KBD_HOME);
+    press(KBD_ENTER);
+    press(KBD_HOME);
+    press(KBD_ENTER);
+    CHECK(mesh_edit_target() == 0);
+    CHECK(strcmp(mesh_edit_base.owner.long_name, "PicoCalc") == 0);
+    ui_render();
+}
+
 // A full table with long, odd names, rendered under the sanitizers
 static void test_stress(void) {
     ui_init();
@@ -499,6 +587,7 @@ int main(void) {
     test_flush();
     test_flows();
     test_settings_tab();
+    test_remote_tab();
     test_position();
     test_stress();
     if (failures)

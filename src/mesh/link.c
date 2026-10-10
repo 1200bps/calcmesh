@@ -346,6 +346,14 @@ static void handle_text(const meshtastic_MeshPacket *p) {
     }
 }
 
+static mesh_admin_cb admin_cb;
+static mesh_admin_routing_cb admin_routing_cb;
+
+void mesh_link_on_admin(mesh_admin_cb on_admin, mesh_admin_routing_cb on_routing) {
+    admin_cb = on_admin;
+    admin_routing_cb = on_routing;
+}
+
 static bool is_admin_id(uint32_t id) {
     for (int i = 0; i < ADMIN_IDS; i++)
         if (id && admin_ids[i] == id)
@@ -365,6 +373,8 @@ static void handle_routing(const meshtastic_MeshPacket *p) {
         r.which_variant != meshtastic_Routing_error_reason_tag)
         return;
     if (admin) {
+        if (admin_routing_cb)
+            admin_routing_cb(req, p->from, (uint8_t)r.error_reason);
         if (r.error_reason != meshtastic_Routing_Error_NONE) {
             stats.admin_errors++;
             stats.admin_last_error = (uint8_t)r.error_reason;
@@ -414,6 +424,18 @@ static void handle_packet(const meshtastic_MeshPacket *p) {
     case meshtastic_PortNum_ROUTING_APP:
         handle_routing(p);
         break;
+    case meshtastic_PortNum_ADMIN_APP: {
+        static meshtastic_AdminMessage a; // ~500 bytes
+        memset(&a, 0, sizeof a);
+        pb_istream_t is = pb_istream_from_buffer(p->decoded.payload.bytes, p->decoded.payload.size);
+        if (!pb_decode(&is, meshtastic_AdminMessage_fields, &a)) {
+            printf("[link] admin packet from !%08lx didn't decode\n", (unsigned long)p->from);
+            break;
+        }
+        if (admin_cb)
+            admin_cb(p, &a);
+        break;
+    }
     default:
         printf("[link] packet !%08lx -> !%08lx ch %u port %d, %u bytes\n",
                (unsigned long)p->from, (unsigned long)p->to, p->channel,
@@ -663,16 +685,30 @@ mesh_send_result_t mesh_link_send_text(mesh_conv_t conv, const char *text,
 uint32_t mesh_link_ms(void) { return now(); }
 
 bool mesh_link_send_admin(const meshtastic_AdminMessage *a) {
-    if (state != MESH_LINK_READY || !mesh_db.my_node_num)
+    return mesh_link_send_admin_to(mesh_db.my_node_num, a, false, NULL);
+}
+
+bool mesh_link_send_admin_to(uint32_t to, const meshtastic_AdminMessage *a, bool want_response,
+                             uint32_t *id) {
+    if (state != MESH_LINK_READY || !mesh_db.my_node_num || !to)
         return false;
     memset(&to_radio, 0, sizeof to_radio);
     to_radio.which_payload_variant = meshtastic_ToRadio_packet_tag;
     meshtastic_MeshPacket *p = &to_radio.packet;
     // from stays 0: that's what tells the node it came from its own client
-    p->to = mesh_db.my_node_num;
+    p->to = to;
     p->channel = 0;
     p->id = next_packet_id();
-    p->hop_limit = 0;
+    if (to == mesh_db.my_node_num) {
+        p->hop_limit = 0;
+    } else {
+        // Over the air: only with PKI (the node refuses to send it otherwise),
+        // acked, and as far as our other packets go
+        p->pki_encrypted = true;
+        p->want_ack = true;
+        p->hop_limit = mesh_db.hop_limit ? mesh_db.hop_limit : DEFAULT_HOP_LIMIT;
+        p->decoded.want_response = want_response;
+    }
     p->which_payload_variant = meshtastic_MeshPacket_decoded_tag;
     p->decoded.portnum = meshtastic_PortNum_ADMIN_APP;
     pb_ostream_t os = pb_ostream_from_buffer(p->decoded.payload.bytes,
@@ -686,6 +722,8 @@ bool mesh_link_send_admin(const meshtastic_AdminMessage *a) {
         return false;
     admin_ids[admin_next++ % ADMIN_IDS] = p->id;
     stats.admin_tx++;
+    if (id)
+        *id = p->id;
     return true;
 }
 

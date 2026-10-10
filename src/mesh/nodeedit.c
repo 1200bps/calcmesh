@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "link.h"
+#include "remoteadmin.h"
 #include "pb_encode.h"
 
 #include "meshtastic/admin.pb.h"
@@ -17,11 +18,45 @@ static mesh_edit_t sent; // what we wrote, to check against what comes back
 static uint32_t write_ms;
 static uint32_t write_syncs, write_errors;
 static bool resynced; // asked for the config ourselves already
+static uint32_t target; // 0: our own node
+static uint8_t error;
 
 // Static: AdminMessage is ~480 bytes.
 static meshtastic_AdminMessage admin;
 
+uint32_t mesh_edit_target(void) { return target; }
+
+static bool busy(void) { return state == MESH_EDIT_RESTARTING || ra_state() == RA_BUSY; }
+
+bool mesh_edit_select(uint32_t node) {
+    if (node == mesh_db.my_node_num)
+        node = 0;
+    if (node == target)
+        return true;
+    if (busy())
+        return false;
+    target = node;
+    if (node)
+        ra_select(node);
+    state = MESH_EDIT_IDLE;
+    written = mismatch = 0;
+    mesh_edit_load();
+    return true;
+}
+
+#define ALL_SECTIONS                                                                       \
+    (MESH_EDIT_OWNER | MESH_EDIT_DEVICE | MESH_EDIT_POSITION | MESH_EDIT_POWER |            \
+     MESH_EDIT_LORA | MESH_EDIT_BLUETOOTH | MESH_EDIT_CHANNELS)
+
+bool mesh_edit_fetch(void) {
+    if (!target || busy())
+        return false;
+    return ra_fetch(ALL_SECTIONS | RA_META);
+}
+
 uint32_t mesh_edit_available(void) {
+    if (target)
+        return ra.node == target ? ra.have & ALL_SECTIONS : 0;
     uint32_t a = 0;
     if (mesh_db.has_owner)
         a |= MESH_EDIT_OWNER;
@@ -40,6 +75,10 @@ uint32_t mesh_edit_available(void) {
 
 static void take(mesh_edit_t *e) {
     const meshtastic_Config *c;
+    if (target) {
+        *e = ra.s;
+        return;
+    }
     memset(e, 0, sizeof *e);
     e->owner = mesh_db.owner;
     if ((c = mesh_db_config(meshtastic_Config_device_tag)))
@@ -124,10 +163,23 @@ static bool send_simple(pb_size_t tag) {
     return mesh_link_send_admin(&admin);
 }
 
+static bool write_remote(uint32_t d) {
+    if (!ra_write(&mesh_edit, d))
+        return false;
+    printf("[edit] writing sections %04lx to !%08lx\n", (unsigned long)d, (unsigned long)target);
+    written = d;
+    mismatch = 0;
+    sent = mesh_edit;
+    state = MESH_EDIT_RESTARTING;
+    return true;
+}
+
 bool mesh_edit_write(void) {
     uint32_t d = mesh_edit_dirty();
-    if (!d || mesh_link_state() != MESH_LINK_READY)
+    if (!d || mesh_link_state() != MESH_LINK_READY || busy())
         return false;
+    if (target)
+        return write_remote(d);
     const mesh_link_stats_t *st = mesh_link_stats();
     write_syncs = st->syncs;
     write_errors = st->admin_errors;
@@ -174,7 +226,54 @@ bool mesh_edit_write(void) {
     return true;
 }
 
+// Errors that mean the node said no, as opposed to not answering
+static bool is_refusal(uint8_t e) {
+    return e == meshtastic_Routing_Error_NOT_AUTHORIZED || e == meshtastic_Routing_Error_PKI_FAILED ||
+           e == meshtastic_Routing_Error_PKI_UNKNOWN_PUBKEY ||
+           e == meshtastic_Routing_Error_ADMIN_BAD_SESSION_KEY ||
+           e == meshtastic_Routing_Error_ADMIN_PUBLIC_KEY_UNAUTHORIZED ||
+           e == meshtastic_Routing_Error_PKI_SEND_FAIL_PUBLIC_KEY ||
+           e == meshtastic_Routing_Error_BAD_REQUEST;
+}
+
+static void poll_remote(void) {
+    ra_poll();
+    if (state != MESH_EDIT_RESTARTING) {
+        // A fetch brought something new: show it, unless there are edits
+        static uint32_t seen_version;
+        if (ra.version != seen_version) {
+            seen_version = ra.version;
+            if (!(differ(&mesh_edit, &mesh_edit_base) & mesh_edit_available()))
+                mesh_edit_load();
+        }
+        return;
+    }
+    switch (ra_state()) {
+    case RA_DONE: {
+        mesh_edit_t now;
+        take(&now);
+        mismatch = differ(&now, &sent) & written;
+        mesh_edit_load();
+        state = mismatch ? MESH_EDIT_MISMATCH : MESH_EDIT_DONE;
+        printf("[edit] !%08lx back; %s\n", (unsigned long)target,
+               mismatch ? "some settings didn't read back as written" : "all settings confirmed");
+        break;
+    }
+    case RA_FAILED:
+        // The edits stay, to try again; what the node has now is unknown
+        error = ra_error();
+        mismatch = written;
+        state = is_refusal(error) ? MESH_EDIT_REFUSED : MESH_EDIT_NO_RESTART;
+        break;
+    default: break;
+    }
+}
+
 void mesh_edit_poll(void) {
+    if (target) {
+        poll_remote();
+        return;
+    }
     const mesh_link_stats_t *st = mesh_link_stats();
     if (state != MESH_EDIT_RESTARTING) {
         // The node's settings changed under us (a resync after desktop mode,
@@ -193,6 +292,7 @@ void mesh_edit_poll(void) {
         // Refused outright; it won't restart for us
         mesh_edit_load();
         mismatch = written;
+        error = st->admin_last_error;
         state = MESH_EDIT_REFUSED;
         printf("[edit] the node refused the change (routing error %u)\n",
                st->admin_last_error);
@@ -211,6 +311,7 @@ void mesh_edit_poll(void) {
     if (t >= MESH_EDIT_TIMEOUT_MS) {
         mesh_edit_load();
         mismatch = written;
+        error = RA_ERR_NO_ANSWER;
         state = MESH_EDIT_NO_RESTART;
         printf("[edit] the node hasn't come back\n");
         return;
@@ -225,6 +326,7 @@ void mesh_edit_poll(void) {
 mesh_edit_state_t mesh_edit_state(void) { return state; }
 uint32_t mesh_edit_written(void) { return written; }
 uint32_t mesh_edit_mismatch(void) { return mismatch; }
+uint8_t mesh_edit_error(void) { return error; }
 
 void mesh_edit_ack(void) {
     if (state != MESH_EDIT_RESTARTING)

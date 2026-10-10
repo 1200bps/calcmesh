@@ -21,7 +21,8 @@ set(MESH_SRCS
     ${REPO_ROOT}/src/mesh/msgs.c
     ${REPO_ROOT}/src/mesh/cmd.c
     ${REPO_ROOT}/src/mesh/nodedb.c
-    ${REPO_ROOT}/src/mesh/nodeedit.c)
+    ${REPO_ROOT}/src/mesh/nodeedit.c
+    ${REPO_ROOT}/src/mesh/remoteadmin.c)
 
 add_library(meshlink STATIC ${MESH_SRCS})
 target_include_directories(meshlink PUBLIC ${REPO_ROOT}/src/mesh)
@@ -84,6 +85,7 @@ add_library(ui_fake STATIC ${UI_SRCS}
     ${REPO_ROOT}/src/mesh/msgs.c
     ${REPO_ROOT}/src/mesh/nodedb.c
     ${REPO_ROOT}/src/mesh/nodeedit.c
+    ${REPO_ROOT}/src/mesh/remoteadmin.c
     ${REPO_ROOT}/src/sd/settings.c
     fake/fake_link.c
     fake/fake_sd.c

@@ -5,14 +5,20 @@
 // "Write changes to node", which asks first. calcmesh's settings
 // (sd/settings.h) take effect at once and are saved to the SD card.
 //
+// The first row picks whose settings: our own node's, or another node's
+// over the mesh (remote admin, mesh/remoteadmin.h), which are only fetched
+// when asked for, since that's a dozen or so packets on air.
+//
 // Up/Down pick a field, Left/Right step its value, Enter edits text (or
 // toggles a switch, or runs an action).
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "link.h"
 #include "mesh/nodeedit.h"
+#include "mesh/remoteadmin.h"
 #include "sd/sd.h"
 #include "sd/settings.h"
 #include "ui.h"
@@ -57,6 +63,8 @@ typedef enum {
     // Actions
     A_WRITE,
     A_DISCARD,
+    A_FETCH,  // another node: ask it for its settings
+    F_TARGET, // whose settings: Enter picks a node
 } field_t;
 
 typedef enum { K_TEXT, K_ENUM, K_BOOL, K_INT, K_ACTION } kind_t;
@@ -87,6 +95,12 @@ static int edit_max, edit_cursor;
 // The write confirmation
 static bool confirming;
 static const char *notice;
+// Picking whose settings: our node first, then favorites, then the rest
+// (only nodes whose key we have, as remote admin needs it)
+static bool picking;
+static ui_list_t pick;
+static uint32_t pick_nodes[MESH_MAX_NODES + 1];
+static int npick, nfav;
 
 // --- names -------------------------------------------------------------------
 
@@ -170,6 +184,8 @@ static kind_t kind_of(int f) {
         return K_INT;
     case A_WRITE:
     case A_DISCARD:
+    case A_FETCH:
+    case F_TARGET:
         return K_ACTION;
     default:
         return K_ENUM;
@@ -389,8 +405,14 @@ static bool changed(int f, int arg) {
     return get(&mesh_edit, f) != get(&mesh_edit_base, f);
 }
 
-static bool node_editable(void) {
-    return mesh_link_conn() == MESH_CONN_UP && mesh_edit_state() != MESH_EDIT_RESTARTING;
+static bool busy(void) { return mesh_edit_state() == MESH_EDIT_RESTARTING || ra_state() == RA_BUSY; }
+
+static bool node_editable(void) { return mesh_link_conn() == MESH_CONN_UP && !busy(); }
+
+// Who we're looking at, for messages
+static const char *target_name(void) {
+    uint32_t t = mesh_edit_target();
+    return ui_node_short(t ? t : mesh_db.my_node_num);
 }
 
 static bool available(int f, int arg) {
@@ -463,6 +485,32 @@ static void add(row_kind_t k, int f, int arg, const char *text) {
         rows[nrows++] = (row_t){(uint8_t)k, (uint8_t)f, (uint8_t)arg, text};
 }
 
+// A note that may be longer than a line: wrapped at spaces into rows. The
+// text is copied, so it can come from a buffer that gets reused.
+#define NOTE_W (UI_COLS - C_LABEL - 1)
+static char note_lines[8][NOTE_W + 1];
+static int nnote_lines;
+
+static void add_note(const char *s) {
+    while (*s && nnote_lines < 8) {
+        int n = (int)strlen(s), len = n;
+        if (n > NOTE_W) {
+            len = NOTE_W;
+            while (len > 0 && s[len] != ' ')
+                len--;
+            if (!len)
+                len = NOTE_W;
+        }
+        char *line = note_lines[nnote_lines++];
+        memcpy(line, s, (size_t)len);
+        line[len] = '\0';
+        add(R_NOTE, 0, 0, line);
+        s += len;
+        while (*s == ' ')
+            s++;
+    }
+}
+
 static void add_field(int f, int arg) {
     if (available(f, arg))
         add(R_FIELD, f, arg, NULL);
@@ -476,11 +524,44 @@ static int changes(void) {
     return n;
 }
 
+// Why a remote node (or our own) said no, or didn't answer
+static const char *error_text(uint8_t e) {
+    static char buf[24];
+    switch (e) {
+    case meshtastic_Routing_Error_ADMIN_PUBLIC_KEY_UNAUTHORIZED:
+        return "our key isn't one of its admin keys";
+    case meshtastic_Routing_Error_NOT_AUTHORIZED: return "not authorized";
+    case meshtastic_Routing_Error_ADMIN_BAD_SESSION_KEY: return "the session key ran out; try again";
+    case meshtastic_Routing_Error_PKI_FAILED:
+    case meshtastic_Routing_Error_PKI_UNKNOWN_PUBKEY:
+    case meshtastic_Routing_Error_PKI_SEND_FAIL_PUBLIC_KEY: return "our node has no key for it";
+    case meshtastic_Routing_Error_NO_ROUTE:
+    case meshtastic_Routing_Error_TIMEOUT:
+    case meshtastic_Routing_Error_MAX_RETRANSMIT:
+    case meshtastic_Routing_Error_NO_RESPONSE:
+    case RA_ERR_NO_ANSWER: return "no answer";
+    case meshtastic_Routing_Error_DUTY_CYCLE_LIMIT: return "duty cycle limit; try later";
+    case RA_ERR_NO_LINK: return "not connected to our node";
+    default: snprintf(buf, sizeof buf, "error %u", e); return buf;
+    }
+}
+
 static const char *edit_result(void) {
-    static char buf[64];
+    static char buf[96];
+    bool remote = mesh_edit_target() != 0;
+    const char *who = target_name();
     switch (mesh_edit_state()) {
-    case MESH_EDIT_RESTARTING: return "Written. Waiting for the node to restart...";
-    case MESH_EDIT_DONE: return "The node restarted and confirms the changes.";
+    case MESH_EDIT_RESTARTING:
+        if (!remote)
+            return "Written. Waiting for the node to restart...";
+        snprintf(buf, sizeof buf,
+                 ra_written() ? "Written. Waiting for %s, then reading back (%d/%d)..."
+                              : "Writing to %s over the mesh (%d/%d)...",
+                 who, ra_done() + 1, ra_total());
+        return buf;
+    case MESH_EDIT_DONE:
+        snprintf(buf, sizeof buf, "%s restarted and confirms the changes.", remote ? who : "The node");
+        return buf;
     case MESH_EDIT_MISMATCH: {
         static const char *const names[] = {"names", "role", "position", "power",
                                             "LoRa", "Bluetooth"};
@@ -493,10 +574,54 @@ static const char *edit_result(void) {
             snprintf(buf + n, sizeof buf - n, " channels");
         return buf;
     }
-    case MESH_EDIT_NO_RESTART: return "The node hasn't come back. Check on it.";
+    case MESH_EDIT_NO_RESTART:
+        if (!remote)
+            return "The node hasn't come back. Check on it.";
+        snprintf(buf, sizeof buf, "%s stopped answering (%s). Fetch to see what it has.", who,
+                 error_text(mesh_edit_error()));
+        return buf;
     case MESH_EDIT_REFUSED:
-        snprintf(buf, sizeof buf, "The node refused the change (error %u).",
-                 mesh_link_stats()->admin_last_error);
+        snprintf(buf, sizeof buf, "%s refused the change: %s.", remote ? who : "The node",
+                 error_text(mesh_edit_error()));
+        return buf;
+    default: return NULL;
+    }
+}
+
+// Our node's public key in base64, as the phone app shows and takes it
+static const char *our_key(void) {
+    static char buf[48];
+    static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const meshtastic_User *u = &mesh_db.owner;
+    if (!mesh_db.has_owner || u->public_key.size != 32)
+        return NULL;
+    const uint8_t *k = u->public_key.bytes;
+    char *o = buf;
+    for (int i = 0; i < 32; i += 3) {
+        uint32_t v = (uint32_t)k[i] << 16 | (i + 1 < 32 ? k[i + 1] << 8 : 0) | (i + 2 < 32 ? k[i + 2] : 0);
+        *o++ = b64[v >> 18 & 63];
+        *o++ = b64[v >> 12 & 63];
+        *o++ = i + 1 < 32 ? b64[v >> 6 & 63] : '=';
+        *o++ = i + 2 < 32 ? b64[v & 63] : '=';
+    }
+    *o = '\0';
+    return buf;
+}
+
+// Where a remote fetch stands, or NULL
+static const char *fetch_note(void) {
+    static char buf[80];
+    switch (ra_state()) {
+    case RA_BUSY:
+        if (mesh_edit_state() == MESH_EDIT_RESTARTING)
+            return NULL; // edit_result() says
+        snprintf(buf, sizeof buf, "Asking %s for its settings (%d/%d)...", target_name(),
+                 ra_done() + 1, ra_total());
+        return buf;
+    case RA_FAILED:
+        if (ra_writing())
+            return NULL; // edit_result() says
+        snprintf(buf, sizeof buf, "Couldn't fetch from %s: %s.", target_name(), error_text(ra_error()));
         return buf;
     default: return NULL;
     }
@@ -557,17 +682,36 @@ static const char *modules_on(void) {
     return buf;
 }
 
-static void build(void) {
-    nrows = 0;
-    static char head[48];
-    if (mesh_db.my_node_num)
-        snprintf(head, sizeof head, "Node %s  !%08lx  fw %s", ui_node_short(mesh_db.my_node_num),
-                 (unsigned long)mesh_db.my_node_num,
-                 mesh_db.firmware_version[0] ? mesh_db.firmware_version : "?");
-    else
-        snprintf(head, sizeof head, "Node");
-    add(R_HEAD, 0, 0, head);
+static void add_node_fields(void) {
+    add_field(F_LONG_NAME, 0);
+    add_field(F_SHORT_NAME, 0);
+    add_field(F_ROLE, 0);
+    add_field(F_NODEINFO_SECS, 0);
+    add_field(F_REGION, 0);
+    add_field(F_PRESET, 0);
+    add_field(F_HOPS, 0);
+    add_field(F_TX_POWER, 0);
+    add_field(F_TX_ENABLED, 0);
+    for (int i = 0; i < MESH_MAX_CHANNELS; i++)
+        if (mesh_edit_base.channels[i].role != meshtastic_Channel_Role_DISABLED)
+            add_field(F_CHANNEL, i);
+    add_field(F_GPS, 0);
+    add_field(F_POS_SECS, 0);
+    add_field(F_POS_SMART, 0);
+    add_field(F_FIXED, 0);
+    add_field(F_POWER_SAVE, 0);
+    add_field(F_BLUETOOTH, 0);
+}
 
+static void add_write_rows(void) {
+    if (mesh_edit_dirty() && !busy()) {
+        add(R_FIELD, A_WRITE, 0, NULL);
+        add(R_FIELD, A_DISCARD, 0, NULL);
+    }
+}
+
+// Our own node: what it sent in the handshake
+static void build_ours(void) {
     mesh_link_conn_t c = mesh_link_conn();
     if (!mesh_edit_available()) {
         add(R_NOTE, 0, 0,
@@ -575,40 +719,74 @@ static void build(void) {
                                    : "The node's settings show here once it's connected.");
         if (c == MESH_CONN_DESKTOP)
             add(R_NOTE, 0, 0, "it hands the node back.");
-    } else {
-        const char *r = edit_result();
-        if (r)
-            add(R_NOTE, 0, 0, r);
-        else if (c == MESH_CONN_DESKTOP)
-            add(R_NOTE, 0, 0, "Desktop mode has the node: look, don't touch.");
-        else if (c != MESH_CONN_UP)
-            add(R_NOTE, 0, 0, "Not connected to the node: read only.");
-        add_field(F_LONG_NAME, 0);
-        add_field(F_SHORT_NAME, 0);
-        add_field(F_ROLE, 0);
-        add_field(F_NODEINFO_SECS, 0);
-        add_field(F_REGION, 0);
-        add_field(F_PRESET, 0);
-        add_field(F_HOPS, 0);
-        add_field(F_TX_POWER, 0);
-        add_field(F_TX_ENABLED, 0);
-        for (int i = 0; i < MESH_MAX_CHANNELS; i++)
-            if (mesh_edit_base.channels[i].role != meshtastic_Channel_Role_DISABLED)
-                add_field(F_CHANNEL, i);
-        add_field(F_GPS, 0);
-        add_field(F_POS_SECS, 0);
-        add_field(F_POS_SMART, 0);
-        add_field(F_FIXED, 0);
-        add_field(F_POWER_SAVE, 0);
-        add_field(F_BLUETOOTH, 0);
-        const char *mods = modules_on();
-        if (mods)
-            add(R_NOTE, 0, 0, mods);
-        if (mesh_edit_dirty() && mesh_edit_state() != MESH_EDIT_RESTARTING) {
-            add(R_FIELD, A_WRITE, 0, NULL);
-            add(R_FIELD, A_DISCARD, 0, NULL);
-        }
+        return;
     }
+    const char *r = edit_result();
+    if (r)
+        add_note(r);
+    else if (c == MESH_CONN_DESKTOP)
+        add(R_NOTE, 0, 0, "Desktop mode has the node: look, don't touch.");
+    else if (c != MESH_CONN_UP)
+        add(R_NOTE, 0, 0, "Not connected to the node: read only.");
+    add_node_fields();
+    const char *mods = modules_on();
+    if (mods)
+        add_note(mods);
+    const char *key = our_key();
+    if (key) {
+        // For other nodes' admin keys, so this one can manage them
+        add(R_NOTE, 0, 0, "Public key (an admin key for nodes it manages):");
+        add(R_NOTE, 0, 0, key);
+    }
+    add_write_rows();
+}
+
+// Another node: only what we've fetched from it
+static void build_remote(void) {
+    static char fetch_label[48];
+    const char *r = edit_result();
+    const char *f = fetch_note();
+    if (r)
+        add_note(r);
+    else if (f)
+        add_note(f);
+    else if (mesh_link_conn() != MESH_CONN_UP)
+        add(R_NOTE, 0, 0, "Not connected to our node: read only.");
+    if (!mesh_edit_available()) {
+        if (!f && ra_state() != RA_BUSY) {
+            add_note("Its settings come over the mesh, a dozen or so packets. It needs our "
+                     "public key as an admin key.");
+        }
+    } else {
+        add_node_fields();
+    }
+    add_write_rows();
+    if (!busy() && !mesh_edit_dirty()) {
+        snprintf(fetch_label, sizeof fetch_label, "> Fetch %s's settings%s", target_name(),
+                 mesh_edit_available() ? " again" : "");
+        add(R_FIELD, A_FETCH, 0, fetch_label);
+    }
+}
+
+static void build(void) {
+    nrows = 0;
+    nnote_lines = 0;
+    static char head[48];
+    uint32_t t = mesh_edit_target();
+    uint32_t num = t ? t : mesh_db.my_node_num;
+    const char *fw = t ? ra.firmware : mesh_db.firmware_version;
+    if (num)
+        snprintf(head, sizeof head, "Node %s  !%08lx  fw %s", ui_node_short(num),
+                 (unsigned long)num, fw[0] ? fw : "?");
+    else
+        snprintf(head, sizeof head, "Node");
+    add(R_HEAD, 0, 0, head);
+    if (mesh_db.my_node_num)
+        add(R_FIELD, F_TARGET, 0, NULL);
+    if (t)
+        build_remote();
+    else
+        build_ours();
 
     add(R_HEAD, 0, 0, "calcmesh");
     add_field(F_LCD, 0);
@@ -652,7 +830,7 @@ static void move(int dir) {
 bool ui_settings_pending(void) {
     return mesh_edit_state() != MESH_EDIT_RESTARTING && mesh_edit_dirty() != 0;
 }
-bool ui_settings_modal(void) { return editing || confirming; }
+bool ui_settings_modal(void) { return editing || confirming || picking; }
 
 // --- drawing -------------------------------------------------------------------
 
@@ -673,10 +851,22 @@ static void draw_row(const row_t *r, int y, bool selected) {
     if (selected)
         fb_fill(0, y, FB_W, UI_LH, FB_WHITE);
 
+    if (f == F_TARGET) {
+        uint32_t t = mesh_edit_target();
+        ui_cells(C_LABEL, y, W_LABEL, "Settings of", fg, FB_CLEAR);
+        snprintf(buf, sizeof buf, "%s  %s", target_name(), t ? "(over the mesh)" : "(this node)");
+        ui_cells(C_VALUE, y, W_VALUE, buf, fg, FB_CLEAR);
+        return;
+    }
+    if (f == A_FETCH) {
+        ui_cells(C_LABEL, y, UI_COLS - C_LABEL, r->text, fg, FB_CLEAR);
+        return;
+    }
     if (f == A_WRITE || f == A_DISCARD) {
         if (f == A_WRITE) {
             int n = changes();
-            snprintf(buf, sizeof buf, "> Write %d change%s to the node", n, n == 1 ? "" : "s");
+            snprintf(buf, sizeof buf, "> Write %d change%s to %s", n, n == 1 ? "" : "s",
+                     mesh_edit_target() ? target_name() : "the node");
         } else {
             snprintf(buf, sizeof buf, "> Discard changes");
         }
@@ -732,11 +922,17 @@ static const char *hint(void) {
         return "";
     int f = rows[sel].field;
     if (is_node(f) && !node_editable())
-        return "Read only while the node isn't connected.";
+        return busy() ? "Read only until it's done." : "Read only while the node isn't connected.";
     switch (kind_of(f)) {
     case K_TEXT: return "Enter: edit";
     case K_BOOL: return "Enter or Left/Right: switch";
-    case K_ACTION: return f == A_WRITE ? "Enter: review and write" : "Enter: back to the node's values";
+    case K_ACTION:
+        switch (f) {
+        case A_WRITE: return "Enter: review and write";
+        case A_DISCARD: return "Enter: back to the node's values";
+        case A_FETCH: return "Enter: ask it over the mesh";
+        default: return "Enter: pick a node";
+        }
     default: return "Left/Right: change";
     }
 }
@@ -769,6 +965,12 @@ static void wrap_text(const char *s, int x, int *y, int w, uint8_t c) {
 #define RISK_TEXT                                                              \
     "! Region, preset, transmit and channel changes can cut it off from the "  \
     "rest of the mesh until the other nodes match."
+#define REMOTE_TEXT                                                            \
+    "They go over the mesh one message at a time. It saves them and "          \
+    "restarts, and then calcmesh reads them back."
+#define REMOTE_RISK_TEXT                                                       \
+    "! It's remote. If it ends up on another region, preset or channel, or "   \
+    "stops transmitting, nothing can reach it until someone gets to it."
 
 // The confirmation: what will change, and what can go wrong
 static void draw_confirm(void) {
@@ -776,18 +978,21 @@ static void draw_confirm(void) {
     int y0 = UI_BODY_Y + 2;
     uint32_t d = mesh_edit_dirty();
     bool risky = (d & (MESH_EDIT_LORA | MESH_EDIT_CHANNELS)) != 0;
+    bool remote = mesh_edit_target() != 0;
+    const char *text = remote ? REMOTE_TEXT : RESTART_TEXT;
+    const char *risk = remote ? REMOTE_RISK_TEXT : RISK_TEXT;
     // Title, changes, gap, text, gap, keys
     int h = (UI_LH + 5) + changes() * UI_LH + UI_LH / 2;
-    wrap_text(RESTART_TEXT, 0, &h, UI_COLS - 4, FB_CLEAR);
+    wrap_text(text, 0, &h, UI_COLS - 4, FB_CLEAR);
     if (risky)
-        wrap_text(RISK_TEXT, 0, &h, UI_COLS - 4, FB_CLEAR);
+        wrap_text(risk, 0, &h, UI_COLS - 4, FB_CLEAR);
     h += UI_LH / 2 + UI_LH + 3;
-    fb_fill(x0, y0, w, h, FB_BLACK);
+    fb_fill(0, y0, FB_W, h, FB_BLACK);
     fb_rect(x0, y0, w, h, FB_WHITE);
     fb_fill(x0, y0, w, UI_LH + 2, FB_WHITE);
 
     char buf[96];
-    snprintf(buf, sizeof buf, "Write to %s?", ui_node_short(mesh_db.my_node_num));
+    snprintf(buf, sizeof buf, remote ? "Write to %s over the mesh?" : "Write to %s?", target_name());
     ui_cells(1, y0 + 1, UI_COLS - 2, buf, FB_BLACK, FB_CLEAR);
 
     int y = y0 + UI_LH + 5;
@@ -803,11 +1008,100 @@ static void draw_confirm(void) {
         y += UI_LH;
     }
     y += UI_LH / 2;
-    wrap_text(RESTART_TEXT, 2, &y, UI_COLS - 4, FB_WHITE);
+    wrap_text(text, 2, &y, UI_COLS - 4, FB_WHITE);
     if (risky)
-        wrap_text(RISK_TEXT, 2, &y, UI_COLS - 4, FB_WHITE);
+        wrap_text(risk, 2, &y, UI_COLS - 4, FB_WHITE);
     y += UI_LH / 2;
     ui_cells(2, y, UI_COLS - 4, "Y: write    N or Esc: not now", FB_WHITE, FB_CLEAR);
+}
+
+// --- picking a node -------------------------------------------------------------
+
+static int by_heard(const void *a, const void *b) {
+    const mesh_node_t *x = mesh_db_find(*(const uint32_t *)a);
+    const mesh_node_t *y = mesh_db_find(*(const uint32_t *)b);
+    uint32_t hx = x ? x->last_heard : 0, hy = y ? y->last_heard : 0;
+    return hx < hy ? 1 : hx > hy ? -1 : 0;
+}
+
+static void pick_build(void) {
+    npick = nfav = 0;
+    pick_nodes[npick++] = mesh_db.my_node_num;
+    for (int fav = 1; fav >= 0; fav--) {
+        int first = npick;
+        for (int i = 0; i < mesh_db.node_count; i++) {
+            const mesh_node_t *n = &mesh_db.nodes[i];
+            if (n->num != mesh_db.my_node_num && n->has_key && n->is_favorite == (fav == 1))
+                pick_nodes[npick++] = n->num;
+        }
+        qsort(pick_nodes + first, (size_t)(npick - first), sizeof pick_nodes[0], by_heard);
+        if (fav)
+            nfav = npick - 1;
+    }
+}
+
+static void start_pick(void) {
+    pick_build();
+    pick.sel = pick.top = 0;
+    for (int i = 0; i < npick; i++)
+        if (pick_nodes[i] == (mesh_edit_target() ? mesh_edit_target() : mesh_db.my_node_num))
+            pick.sel = i;
+    picking = true;
+}
+
+// Lines in the picker: a heading before the favorites and before the rest
+#define PICK_ROWS (ROWS - 3)
+
+static void draw_pick(void) {
+    int x0 = 2, w = FB_W - 4, y0 = UI_BODY_Y + 2;
+    int h = UI_LH + 4 + (PICK_ROWS + 1) * UI_LH + 4;
+    // Down to the hint line, so no list shows around it
+    fb_fill(0, y0, FB_W, UI_BODY_Y + UI_BODY_H - UI_LH - 1 - y0, FB_BLACK);
+    fb_rect(x0, y0, w, h, FB_WHITE);
+    fb_fill(x0, y0, w, UI_LH + 2, FB_WHITE);
+    ui_cells(1, y0 + 1, UI_COLS - 2, "Settings of which node?", FB_BLACK, FB_CLEAR);
+    ui_list_fix(&pick, npick, PICK_ROWS);
+    int y = y0 + UI_LH + 4;
+    for (int i = pick.top; i < npick && i < pick.top + PICK_ROWS; i++, y += UI_LH) {
+        uint32_t num = pick_nodes[i];
+        const mesh_node_t *n = mesh_db_find(num);
+        bool selected = i == pick.sel;
+        uint8_t fg = selected ? FB_BLACK : FB_WHITE, dim = selected ? FB_BLACK : FB_GREY;
+        if (selected)
+            fb_fill(x0 + 2, y, w - 4, UI_LH, FB_WHITE);
+        char right[24], age[8];
+        if (i == 0)
+            snprintf(right, sizeof right, "this node");
+        else
+            snprintf(right, sizeof right, "%s%s", i <= nfav ? "fav  " : "",
+                     ui_ago(n ? n->last_heard : 0, age));
+        ui_cells(2, y, 6, ui_node_short(num), fg, FB_CLEAR);
+        ui_cells(8, y, UI_COLS - 22, ui_node_long(num), fg, FB_CLEAR);
+        ui_cells_right(UI_COLS - 14, y, 12, right, dim, FB_CLEAR);
+    }
+    if (npick == 1)
+        ui_cells(2, y, UI_COLS - 4, "No other node's public key yet.", FB_GREY, FB_CLEAR);
+    ui_cells(2, y0 + h - UI_LH - 3, UI_COLS - 4, "Enter: pick  Esc: back", FB_GREY, FB_CLEAR);
+}
+
+static void pick_key(const kbd_event_t *ev) {
+    if (ui_list_key(&pick, npick, PICK_ROWS, ev->key))
+        return;
+    if (ev->key == KBD_ESC) {
+        picking = false;
+    } else if (ev->key == KBD_ENTER && pick.sel < npick) {
+        picking = false;
+        uint32_t num = pick_nodes[pick.sel];
+        if (!mesh_edit_select(num)) {
+            notice = "Busy: wait for it to finish first.";
+            return;
+        }
+        // Ready to fetch, which is one more Enter
+        if (num != mesh_db.my_node_num && !mesh_edit_available()) {
+            sel_field = A_FETCH;
+            sel_arg = 0;
+        }
+    }
 }
 
 void ui_settings_draw(void) {
@@ -850,6 +1144,8 @@ void ui_settings_draw(void) {
 
     if (confirming)
         draw_confirm();
+    if (picking)
+        draw_pick();
 }
 
 // --- keys ----------------------------------------------------------------------
@@ -932,6 +1228,10 @@ bool ui_settings_key(const kbd_event_t *ev) {
         confirm_key(ev);
         return true;
     }
+    if (picking) {
+        pick_key(ev);
+        return true;
+    }
     if (editing) {
         edit_key(ev);
         return true;
@@ -969,6 +1269,14 @@ bool ui_settings_key(const kbd_event_t *ev) {
                 notice = "Not connected to the node.";
         } else if (f == A_DISCARD) {
             mesh_edit = mesh_edit_base;
+        } else if (f == F_TARGET) {
+            if (busy())
+                notice = "Busy: wait for it to finish first.";
+            else
+                start_pick();
+        } else if (f == A_FETCH) {
+            if (!mesh_edit_fetch())
+                notice = "Not connected to our node.";
         } else if (locked) {
             notice = "Read only while the node isn't connected.";
         } else if (kind_of(f) == K_TEXT) {

@@ -34,6 +34,7 @@ typedef struct {
     bool has_position;
     bool via_mqtt;
     bool is_favorite;
+    bool has_key; // we have its public key, so it can be sent PKI (remote admin)
     float snr;
     uint32_t last_heard; // node's clock, epoch seconds; 0 if never
     int32_t latitude_i;  // 1e-7 degrees

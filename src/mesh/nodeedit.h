@@ -11,6 +11,9 @@
 // Each section goes out whole, copied from what the node sent, so fields we
 // don't show (ignore_incoming, PSKs, is_licensed and so on) are written back
 // as they were.
+//
+// It can also be pointed at another node (mesh_edit_select), whose settings
+// are then fetched and written over the mesh instead (remoteadmin.h).
 #pragma once
 
 #include <stdbool.h>
@@ -44,6 +47,14 @@ typedef struct {
 extern mesh_edit_t mesh_edit;
 extern mesh_edit_t mesh_edit_base;
 
+// Which node: 0 for our own, else another node's number. Switching drops
+// any edits; false (and no switch) while a write or fetch is under way.
+uint32_t mesh_edit_target(void);
+bool mesh_edit_select(uint32_t node);
+// Another node: ask it for all its settings (again). False if busy, if
+// there's no link, or if it's our own node (which sends them by itself).
+bool mesh_edit_fetch(void);
+
 // Sections the node has sent us; only those can be edited or written.
 uint32_t mesh_edit_available(void);
 // Take a fresh copy of the node's settings into both, dropping any edits.
@@ -69,6 +80,8 @@ mesh_edit_state_t mesh_edit_state(void);
 // What was written last time, and which of it didn't read back the same.
 uint32_t mesh_edit_written(void);
 uint32_t mesh_edit_mismatch(void);
+// For REFUSED and NO_RESTART: a meshtastic_Routing_Error, or RA_ERR_*.
+uint8_t mesh_edit_error(void);
 // Back to IDLE once the result has been seen.
 void mesh_edit_ack(void);
 

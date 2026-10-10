@@ -31,6 +31,7 @@ add_executable(calcmesh
     src/mesh/cmd.c
     src/mesh/nodedb.c
     src/mesh/nodeedit.c
+    src/mesh/remoteadmin.c
     src/ui/fb.c
     src/ui/font.c
     src/ui/font_6x12.c

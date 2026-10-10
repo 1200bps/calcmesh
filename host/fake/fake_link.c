@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "link.h"
+#include "meshtastic/admin.pb.h"
 #include "nodedb.h"
 #include "scene.h"
 
@@ -25,6 +26,97 @@ bool mesh_link_send_admin(const struct _meshtastic_AdminMessage *a) {
     if (fake_link_state != MESH_LINK_READY)
         return false;
     fake_admin_sent++;
+    return true;
+}
+
+// Remote admin: one message waits at a time; fake_remote_answer() has the
+// fake remote node answer it.
+static mesh_admin_cb admin_cb;
+static mesh_admin_routing_cb routing_cb;
+static meshtastic_AdminMessage pending;
+static uint32_t pending_to, pending_id;
+mesh_edit_t fake_remote;
+int fake_remote_error;
+int fake_remote_sent;
+
+void mesh_link_on_admin(mesh_admin_cb on_admin, mesh_admin_routing_cb on_routing) {
+    admin_cb = on_admin;
+    routing_cb = on_routing;
+}
+
+bool mesh_link_send_admin_to(uint32_t to, const struct _meshtastic_AdminMessage *a,
+                             bool want_response, uint32_t *id) {
+    (void)want_response;
+    if (fake_link_state != MESH_LINK_READY)
+        return false;
+    static uint32_t next_id = 0x9000;
+    pending = *a;
+    pending_to = to;
+    pending_id = ++next_id;
+    fake_remote_sent++;
+    if (id)
+        *id = pending_id;
+    return true;
+}
+
+bool fake_remote_answer(void) {
+    if (!pending_id)
+        return false;
+    uint32_t id = pending_id;
+    pending_id = 0;
+    if (fake_remote_error) {
+        routing_cb(id, pending_to, (uint8_t)fake_remote_error);
+        return true;
+    }
+    static meshtastic_AdminMessage r;
+    memset(&r, 0, sizeof r);
+    r.session_passkey.size = 8;
+    memset(r.session_passkey.bytes, 0x5a, 8);
+    switch (pending.which_payload_variant) {
+    case meshtastic_AdminMessage_get_device_metadata_request_tag:
+        r.which_payload_variant = meshtastic_AdminMessage_get_device_metadata_response_tag;
+        strcpy(r.get_device_metadata_response.firmware_version, "2.6.11.60ec05e");
+        break;
+    case meshtastic_AdminMessage_get_owner_request_tag:
+        r.which_payload_variant = meshtastic_AdminMessage_get_owner_response_tag;
+        r.get_owner_response = fake_remote.owner;
+        break;
+    case meshtastic_AdminMessage_get_config_request_tag: {
+        r.which_payload_variant = meshtastic_AdminMessage_get_config_response_tag;
+        meshtastic_Config *c = &r.get_config_response;
+        c->which_payload_variant = (pb_size_t)(pending.get_config_request + 1);
+        switch (c->which_payload_variant) {
+        case meshtastic_Config_device_tag: c->payload_variant.device = fake_remote.device; break;
+        case meshtastic_Config_position_tag: c->payload_variant.position = fake_remote.position; break;
+        case meshtastic_Config_power_tag: c->payload_variant.power = fake_remote.power; break;
+        case meshtastic_Config_lora_tag: c->payload_variant.lora = fake_remote.lora; break;
+        default: c->payload_variant.bluetooth = fake_remote.bluetooth; break;
+        }
+        break;
+    }
+    case meshtastic_AdminMessage_get_channel_request_tag:
+        r.which_payload_variant = meshtastic_AdminMessage_get_channel_response_tag;
+        r.get_channel_response = fake_remote.channels[pending.get_channel_request - 1];
+        r.get_channel_response.index = (int32_t)pending.get_channel_request - 1;
+        break;
+    default:
+        // A change: take it, and ack
+        if (pending.which_payload_variant == meshtastic_AdminMessage_set_owner_tag)
+            fake_remote.owner = pending.set_owner;
+        if (pending.which_payload_variant == meshtastic_AdminMessage_set_config_tag &&
+            pending.set_config.which_payload_variant == meshtastic_Config_lora_tag)
+            fake_remote.lora = pending.set_config.payload_variant.lora;
+        routing_cb(id, pending_to, 0);
+        return true;
+    }
+    static meshtastic_MeshPacket p;
+    memset(&p, 0, sizeof p);
+    p.from = pending_to;
+    p.to = mesh_db.my_node_num;
+    p.which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    p.decoded.portnum = meshtastic_PortNum_ADMIN_APP;
+    p.decoded.request_id = id;
+    admin_cb(&p, &r);
     return true;
 }
 
