@@ -90,6 +90,14 @@ static void drop_conv(int slot) {
             remove_at(i);
 }
 
+void mesh_msgs_drop(mesh_conv_t c) {
+    int slot = conv_find(c);
+    if (slot >= 0) {
+        drop_conv(slot);
+        version++;
+    }
+}
+
 static int conv_get(mesh_conv_t c) {
     int slot = conv_find(c);
     if (slot >= 0)

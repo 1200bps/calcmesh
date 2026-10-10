@@ -7,6 +7,7 @@
 #include "ff.h"
 #include "meshtastic/mesh.pb.h"
 #include "mesh/msgs.h"
+#include "mesh/nodedb.h"
 #include "ramdisk.h"
 #include "sd/msglog.h"
 
@@ -392,6 +393,124 @@ static void test_queue_full(void) {
     free(f0);
 }
 
+static void set_channel(int index, meshtastic_Channel_Role role, const char *name,
+                        uint8_t psk0) {
+    meshtastic_Channel ch = meshtastic_Channel_init_zero;
+    ch.index = index;
+    ch.role = role;
+    ch.has_settings = true;
+    snprintf(ch.settings.name, sizeof ch.settings.name, "%s", name);
+    ch.settings.psk.size = 1;
+    ch.settings.psk.bytes[0] = psk0;
+    mesh_db_set_channel(&ch);
+}
+
+// The node's channels: LongFast and Hike. LongFast is named only when it
+// isn't the primary (an unnamed primary takes its preset's name, which is
+// what reaches the radio, so either way it's the same channel).
+static void node_channels(int longfast, int hike) {
+    mesh_db_clear();
+    mesh_db.has_lora = true;
+    mesh_db.use_preset = true;
+    mesh_db.modem_preset = meshtastic_Config_LoRaConfig_ModemPreset_LONG_FAST;
+    set_channel(longfast, longfast == 0 ? meshtastic_Channel_Role_PRIMARY
+                                        : meshtastic_Channel_Role_SECONDARY,
+                longfast == 0 ? "" : "LongFast", 1);
+    set_channel(hike, hike == 0 ? meshtastic_Channel_Role_PRIMARY
+                                : meshtastic_Channel_Role_SECONDARY, "Hike/1", 1);
+}
+
+static void test_channel_names(void) {
+    char lf[MSGLOG_NAME_MAX + 1], hk[MSGLOG_NAME_MAX + 1], p_lf[64], p_hk[64];
+    node_channels(0, 1);
+    CHECK(msglog_channel_file(0, lf) && msglog_channel_file(1, hk));
+    CHECK(strncmp(lf, "ch-LongFast-", 12) == 0 && strlen(lf) == 20);
+    CHECK(strncmp(hk, "ch-Hike_1-", 10) == 0 && strlen(hk) == 18);
+    CHECK(!msglog_channel_file(2, p_lf)); // disabled
+    snprintf(p_lf, sizeof p_lf, MSGLOG_DIR "/%s.tsv", lf);
+    snprintf(p_hk, sizeof p_hk, MSGLOG_DIR "/%s.tsv", hk);
+    // Same name, other key: another channel.
+    char other[MSGLOG_NAME_MAX + 1];
+    set_channel(1, meshtastic_Channel_Role_SECONDARY, "Hike/1", 2);
+    CHECK(msglog_channel_file(1, other) && strcmp(other, hk) != 0);
+    set_channel(1, meshtastic_Channel_Role_SECONDARY, "Hike/1", 1);
+    // Unnamed primary before the node's LoRa config: not known yet.
+    mesh_db.has_lora = false;
+    CHECK(!msglog_channel_file(0, other));
+    mesh_db.has_lora = true;
+
+    // A card from before channel names, with ch0 and ch1 files on it.
+    fresh_card();
+    mesh_db_clear();
+    mesh_msgs_set_observer(NULL);
+    mesh_msgs_clear();
+    CHECK(msglog_open(true) == 0);
+    rx(MESH_CONV_CHANNEL(0), 0xa1, "lf one");
+    rx(MESH_CONV_CHANNEL(1), 0xa1, "hike one");
+    mesh_msg_t *out = tx(MESH_CONV_CHANNEL(0), "lf mine");
+    flush_all();
+    FILINFO fi;
+    CHECK(f_stat(MSGLOG_DIR "/ch0.tsv", &fi) == FR_OK && f_stat(MSGLOG_DIR "/ch1.tsv", &fi) == FR_OK);
+
+    // Boot: restored by index, then the node says what its channels are.
+    CHECK(reboot() == 3);
+    CHECK(msglog_sync_channels() == 0); // channel table still empty
+    node_channels(0, 1);
+    rx(MESH_CONV_CHANNEL(1), 0xa1, "hike queued"); // still bound for ch1.tsv
+    CHECK(msglog_sync_channels() == 1);
+    CHECK(f_stat(MSGLOG_DIR "/ch0.tsv", &fi) == FR_NO_FILE &&
+          f_stat(MSGLOG_DIR "/ch1.tsv", &fi) == FR_NO_FILE);
+    char *f = slurp(p_hk);
+    CHECK(f && count_lines(f) == 3 && strstr(f, "\thike queued\n"));
+    free(f);
+    f = slurp(MSGLOG_CHANNELS);
+    CHECK(f && strstr(f, lf) && strstr(f, "\tHike/1\n"));
+    free(f);
+    CHECK(mesh_msgs_count(MESH_CONV_CHANNEL(0)) == 2);
+    CHECK(msglog_sync_channels() == 0); // nothing new
+
+    // New traffic goes to the named files.
+    rx(MESH_CONV_CHANNEL(0), 0xa1, "lf two");
+    flush_all();
+    f = slurp(p_lf);
+    CHECK(f && count_lines(f) == 4 && strstr(f, "\tlf two\n"));
+    // The in-flight one at the reboot was failed in its old file, renamed.
+    CHECK(f && strstr(f, "\tfailed   \t003\t-\t-\t-\t-\tlf mine\n"));
+    free(f);
+    (void)out;
+
+    // Reboot: restored straight from the named files by the saved table.
+    mesh_db_clear();
+    CHECK(reboot() == 5);
+    CHECK(strcmp(text_at(MESH_CONV_CHANNEL(0), 0), "lf two") == 0);
+    CHECK(strcmp(text_at(MESH_CONV_CHANNEL(1), 0), "hike queued") == 0);
+
+    // The node's channels swapped: the store follows, and so does logging.
+    node_channels(1, 0);
+    CHECK(msglog_sync_channels() == 1);
+    CHECK(strcmp(text_at(MESH_CONV_CHANNEL(0), 0), "hike queued") == 0);
+    CHECK(strcmp(text_at(MESH_CONV_CHANNEL(1), 0), "lf two") == 0);
+    CHECK(mesh_msgs_recent(MESH_CONV_CHANNEL(0), 0)->channel == 0);
+    rx(MESH_CONV_CHANNEL(0), 0xa1, "hike on 0");
+    flush_all();
+    f = slurp(p_hk);
+    CHECK(f && strstr(f, "\thike on 0\n"));
+    free(f);
+    mesh_db_clear();
+    CHECK(reboot() == 6);
+    CHECK(strcmp(text_at(MESH_CONV_CHANNEL(0), 0), "hike on 0") == 0);
+    CHECK(strcmp(text_at(MESH_CONV_CHANNEL(1), 0), "lf two") == 0);
+
+    // Hike removed: its conversation goes, its file stays.
+    node_channels(0, 1);
+    mesh_db.channels[1].role = meshtastic_Channel_Role_DISABLED;
+    CHECK(msglog_sync_channels() == 1);
+    CHECK(mesh_msgs_conv(MESH_CONV_CHANNEL(1)) == NULL);
+    CHECK(strcmp(text_at(MESH_CONV_CHANNEL(0), 0), "lf two") == 0);
+    CHECK(f_stat(p_hk, &fi) == FR_OK);
+    mesh_db_clear();
+}
+
 int main(void) {
     test_format_roundtrip();
     test_fattime();
@@ -403,6 +522,7 @@ int main(void) {
     test_torn_line();
     test_offline();
     test_queue_full();
+    test_channel_names();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

@@ -6,6 +6,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 // spi0, per the ClockworkPi mainboard v2.0 schematic.
 #define SD_SPI spi0
@@ -14,6 +15,9 @@
 #define SD_SCK_PIN 18
 #define SD_MOSI_PIN 19
 #define SD_DET_PIN 22 // low while a card is in
+#ifndef SD_SPI_HZ
+#define SD_SPI_HZ 12500000 // data clock, when the card keeps up
+#endif
 
 typedef enum {
     SD_NO_CARD,
@@ -34,4 +38,8 @@ void sd_print_status(void);
 // ---- sd_card.c (FatFs disk driver) -----------------------------------------
 void sd_card_pins_init(void);
 void sd_card_eject(void);
+// After each mount attempt (before any eject): a failure after the card
+// initialised slows the clock for the next try.
+void sd_card_mounted(bool ok);
+uint32_t sd_card_hz(void);
 const char *sd_card_type(void);

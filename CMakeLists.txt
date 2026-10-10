@@ -20,6 +20,7 @@ include(cmake/meshtastic_protos.cmake)
 add_executable(calcmesh
     src/main.c
     src/input/kbd.c
+    src/input/backlight.c
     src/input/kbd_map.c
     src/lcd/lcd.c
     src/meshlink.c
@@ -37,6 +38,7 @@ add_executable(calcmesh
     src/ui/ui_chats.c
     src/ui/ui_nodes.c
     src/sd/msglog.c
+    src/sd/settings.c
     src/sd/sd.c
     src/sd/sd_card.c
     src/usb/usb_descriptors.c

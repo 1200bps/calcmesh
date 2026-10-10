@@ -222,31 +222,81 @@ bool msglog_parse(char *ln, mesh_msg_t *m, uint32_t *n, size_t *status_off) {
 
 // ---- files ------------------------------------------------------------------
 
-static void conv_path(mesh_conv_t c, char *buf, size_t len) {
-    if (c.peer)
-        snprintf(buf, len, MSGLOG_DIR "/dm-%08lx.tsv", (unsigned long)c.peer);
+// Channel files are named for the channel, not its index, so a history
+// follows its channel when the node's channels are reordered:
+// ch-<name>-<hash>, the name made filename-safe and the hash covering the
+// real name and key. chan_file[] maps today's indexes to them, as the node
+// last said (kept on the card in MSGLOG_CHANNELS for the next boot). An index
+// we don't know the channel of yet falls back to the old ch<index> name.
+static char chan_file[MESH_MAX_CHANNELS][MSGLOG_NAME_MAX + 1];
+
+bool msglog_channel_file(int index, char *buf) {
+    if (index < 0 || index >= MESH_MAX_CHANNELS)
+        return false;
+    const mesh_channel_t *c = &mesh_db.channels[index];
+    if (c->role == meshtastic_Channel_Role_DISABLED ||
+        (!c->name[0] && !mesh_db.has_lora)) // unnamed primary: name unknown yet
+        return false;
+    const char *name = mesh_db_channel_name(index);
+    uint32_t h = 2166136261u;
+    for (const char *p = name; *p; p++)
+        h = (h ^ (uint8_t)*p) * 16777619u;
+    for (int i = 0; i < 4; i++)
+        h = (h ^ (uint8_t)(c->psk_hash >> (8 * i))) * 16777619u;
+    char safe[sizeof c->name];
+    size_t n = 0;
+    for (const char *p = name; *p && n < sizeof safe - 1; p++) {
+        char ch = *p;
+        bool ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                  (ch >= '0' && ch <= '9') || ch == '-' || ch == '_';
+        safe[n++] = ok ? ch : '_';
+    }
+    safe[n] = '\0';
+    if (n)
+        snprintf(buf, MSGLOG_NAME_MAX + 1, "ch-%s-%08lx", safe, (unsigned long)h);
     else
-        snprintf(buf, len, MSGLOG_DIR "/ch%u.tsv", c.channel);
+        snprintf(buf, MSGLOG_NAME_MAX + 1, "ch-%08lx", (unsigned long)h);
+    return true;
 }
 
-static bool path_conv(const char *name, mesh_conv_t *c) {
-    size_t len = strlen(name);
-    if (len < 5 || strcasecmp(name + len - 4, ".tsv") != 0)
+// The file a conversation is logged to, without directory or .tsv.
+static void conv_name(mesh_conv_t c, char *buf) {
+    if (c.peer)
+        snprintf(buf, MSGLOG_NAME_MAX + 1, "dm-%08lx", (unsigned long)c.peer);
+    else if (c.channel < MESH_MAX_CHANNELS && chan_file[c.channel][0])
+        strcpy(buf, chan_file[c.channel]);
+    else
+        snprintf(buf, MSGLOG_NAME_MAX + 1, "ch%u", c.channel);
+}
+
+static void name_path(const char *name, char *buf) {
+    snprintf(buf, MSGLOG_PATH_MAX, MSGLOG_DIR "/%s.tsv", name);
+}
+
+// Which conversation a file in MSGLOG_DIR holds; false if none we restore.
+static bool path_conv(const char *fname, mesh_conv_t *c, char *name) {
+    size_t len = strlen(fname);
+    if (len < 5 || len - 4 > MSGLOG_NAME_MAX || strcasecmp(fname + len - 4, ".tsv") != 0)
         return false;
-    char base[16];
-    if (len - 4 >= sizeof base)
-        return false;
-    memcpy(base, name, len - 4);
-    base[len - 4] = '\0';
+    memcpy(name, fname, len - 4);
+    name[len - 4] = '\0';
     uint32_t v;
-    if (strncasecmp(base, "ch", 2) == 0 && parse_u32(base + 2, 10, &v) &&
-        v < MESH_MAX_CHANNELS && strlen(base) <= 3) {
-        *c = MESH_CONV_CHANNEL((uint8_t)v);
+    if (strncasecmp(name, "dm-", 3) == 0 && strlen(name) == 11 &&
+        parse_u32(name + 3, 16, &v) && v) {
+        *c = MESH_CONV_DM(v);
         return true;
     }
-    if (strncasecmp(base, "dm-", 3) == 0 && strlen(base) == 11 &&
-        parse_u32(base + 3, 16, &v) && v) {
-        *c = MESH_CONV_DM(v);
+    for (int i = 0; i < MESH_MAX_CHANNELS; i++) {
+        if (chan_file[i][0] && strcasecmp(name, chan_file[i]) == 0) {
+            *c = MESH_CONV_CHANNEL((uint8_t)i);
+            return true;
+        }
+    }
+    // Old-style ch<index>, from before the names: only while that index's
+    // channel isn't known.
+    if (strncasecmp(name, "ch", 2) == 0 && strlen(name) == 3 &&
+        parse_u32(name + 2, 10, &v) && v < MESH_MAX_CHANNELS && !chan_file[v][0]) {
+        *c = MESH_CONV_CHANNEL((uint8_t)v);
         return true;
     }
     return false;
@@ -333,6 +383,7 @@ typedef struct {
     mesh_conv_t conv;
     uint32_t last_n;
     FSIZE_t tail;
+    char name[MSGLOG_NAME_MAX + 1];
 } file_ent_t;
 
 static FRESULT scan_file(const char *path, file_ent_t *e) {
@@ -355,8 +406,8 @@ static FRESULT scan_file(const char *path, file_ent_t *e) {
 }
 
 static FRESULT restore_file(const file_ent_t *e, uint32_t *count) {
-    char path[48];
-    conv_path(e->conv, path, sizeof path);
+    char path[MSGLOG_PATH_MAX];
+    name_path(e->name, path);
     FRESULT r = f_open(&fil, path, FA_READ | FA_WRITE);
     if (r != FR_OK)
         return r;
@@ -375,6 +426,8 @@ static FRESULT restore_file(const file_ent_t *e, uint32_t *count) {
                 if (patches < PATCHES)
                     patch[patches++] = start + so;
             }
+            if (!e->conv.peer)
+                m.channel = e->conv.channel; // it may have had another index then
             if (mesh_msgs_restore(e->conv, &m))
                 (*count)++;
         }
@@ -445,6 +498,7 @@ typedef struct {
     uint32_t id;
     mesh_conv_t conv;
     FSIZE_t off; // of its status column
+    char name[MSGLOG_NAME_MAX + 1]; // the file it's in
     bool used;
 } pending_t;
 static pending_t pending[PENDING];
@@ -496,9 +550,10 @@ static FRESULT write_all(const void *p, UINT n) {
 }
 
 static FRESULT append(const rec_t *h, const char *text) {
-    char path[48];
+    char name[MSGLOG_NAME_MAX + 1], path[MSGLOG_PATH_MAX];
     mesh_conv_t c = h->peer ? MESH_CONV_DM(h->peer) : MESH_CONV_CHANNEL(h->channel);
-    conv_path(c, path, sizeof path);
+    conv_name(c, name);
+    name_path(name, path);
     FRESULT r = f_open(&fil, path, FA_OPEN_ALWAYS | FA_READ | FA_WRITE);
     if (r != FR_OK)
         return r;
@@ -523,6 +578,7 @@ static FRESULT append(const rec_t *h, const char *text) {
     if (r == FR_OK && !status_final(h->status)) {
         pending[pending_next] = (pending_t){
             .id = h->id, .conv = c, .off = at + h->status_off, .used = true};
+        strcpy(pending[pending_next].name, name);
         pending_next = (pending_next + 1) % PENDING;
     }
     return r;
@@ -533,8 +589,8 @@ static FRESULT rewrite_status(const rec_t *h, const char *st) {
     int i = pending_find(h->id, c);
     if (i < 0)
         return FR_OK; // its line never made it to the card
-    char path[48];
-    conv_path(c, path, sizeof path);
+    char path[MSGLOG_PATH_MAX];
+    name_path(pending[i].name, path);
     FRESULT r = f_open(&fil, path, FA_OPEN_EXISTING | FA_READ | FA_WRITE);
     if (r != FR_OK)
         return r;
@@ -578,6 +634,131 @@ int msglog_flush(void) {
 
 bool msglog_pending(void) { return online && q_used; }
 
+// ---- channel map ----------------------------------------------------------------
+
+// MSGLOG_CHANNELS: "<index>\t<file>\t<channel name>" per known channel, under
+// a # comment line. Only the first two fields are read back.
+static FRESULT load_channels(void) {
+    memset(chan_file, 0, sizeof chan_file);
+    FRESULT r = f_open(&fil, MSGLOG_CHANNELS, FA_READ);
+    if (r == FR_NO_FILE)
+        return FR_OK;
+    if (r != FR_OK)
+        return r;
+    rd.valid = false;
+    FSIZE_t pos = 0;
+    while (read_line(&pos, &r)) {
+        char *tab = strchr(line, '\t'), *end;
+        if (line[0] == '#' || !tab)
+            continue;
+        *tab = '\0';
+        unsigned long i = strtoul(line, &end, 10);
+        char *name = tab + 1;
+        if ((tab = strchr(name, '\t')))
+            *tab = '\0';
+        if (*end || end == line || i >= MESH_MAX_CHANNELS || strlen(name) > MSGLOG_NAME_MAX ||
+            strncmp(name, "ch-", 3) != 0 || strpbrk(name, "/\\:"))
+            continue;
+        strcpy(chan_file[i], name);
+    }
+    FRESULT rc = f_close(&fil);
+    return r != FR_OK ? r : rc;
+}
+
+static FRESULT save_channels(void) {
+    FRESULT r = f_open(&fil, MSGLOG_CHANNELS, FA_CREATE_ALWAYS | FA_WRITE);
+    if (r != FR_OK)
+        return r;
+    static const char hdr[] = "# index\tfile\tchannel, as the node last said\n";
+    r = write_all(hdr, sizeof hdr - 1);
+    for (int i = 0; i < MESH_MAX_CHANNELS && r == FR_OK; i++) {
+        if (!chan_file[i][0])
+            continue;
+        int n = snprintf(line, sizeof line, "%d\t%s\t%s\n", i, chan_file[i],
+                         mesh_db_channel_name(i));
+        r = write_all(line, (UINT)n);
+    }
+    FRESULT rc = f_close(&fil);
+    return r != FR_OK ? r : rc;
+}
+
+static bool file_exists(const char *path) {
+    FILINFO fi;
+    return f_stat(path, &fi) == FR_OK;
+}
+
+int msglog_sync_channels(void) {
+    if (!online)
+        return 0;
+    // Anything queued belongs to the files as they were.
+    while (msglog_pending())
+        if (msglog_flush() < 0)
+            return -1;
+
+    // First drop what each changed index held, then load each channel's
+    // history, so a swap doesn't load one before the other has made room.
+    bool changed[MESH_MAX_CHANNELS] = {false}, any = false;
+    FRESULT r = FR_OK;
+    for (int i = 0; i < MESH_MAX_CHANNELS && r == FR_OK; i++) {
+        char now[MSGLOG_NAME_MAX + 1] = "";
+        msglog_channel_file(i, now);
+        if (strcmp(now, chan_file[i]) == 0)
+            continue;
+        changed[i] = any = true;
+        mesh_conv_t c = MESH_CONV_CHANNEL((uint8_t)i);
+        if (chan_file[i][0]) {
+            // Another channel has this index now; what we hold is the old one's.
+            mesh_msgs_drop(c);
+        } else if (now[0]) {
+            // ch<i>.tsv, from before channel names (or written before the
+            // node said what this channel is), is this channel's history.
+            char legacy[8], old_path[MSGLOG_PATH_MAX], new_path[MSGLOG_PATH_MAX];
+            snprintf(legacy, sizeof legacy, "ch%d", i);
+            name_path(legacy, old_path);
+            name_path(now, new_path);
+            if (file_exists(old_path)) {
+                if (file_exists(new_path)) {
+                    printf("[sd] %s.tsv and %s.tsv both hold channel %d; "
+                           "leaving %s.tsv as it is\n", now, legacy, i, legacy);
+                    mesh_msgs_drop(c); // restored from the old file
+                } else {
+                    if ((r = f_rename(old_path, new_path)) != FR_OK)
+                        break;
+                    printf("[sd] channel %d history: %s.tsv renamed %s.tsv\n", i,
+                           legacy, now);
+                }
+                for (int k = 0; k < PENDING; k++)
+                    if (pending[k].used && strcmp(pending[k].name, legacy) == 0)
+                        strcpy(pending[k].name, now);
+            }
+        }
+        strcpy(chan_file[i], now);
+    }
+    for (int i = 0; i < MESH_MAX_CHANNELS && r == FR_OK; i++) {
+        mesh_conv_t c = MESH_CONV_CHANNEL((uint8_t)i);
+        if (!changed[i] || !chan_file[i][0] || mesh_msgs_conv(c))
+            continue;
+        file_ent_t e = {.conv = c};
+        strcpy(e.name, chan_file[i]);
+        char path[MSGLOG_PATH_MAX];
+        name_path(e.name, path);
+        uint32_t count = 0;
+        if (file_exists(path) && ((r = scan_file(path, &e)) != FR_OK ||
+                                  (r = restore_file(&e, &count)) != FR_OK))
+            break;
+        stats.restored += count;
+    }
+    if (r == FR_OK && any)
+        r = save_channels();
+    if (r != FR_OK) {
+        printf("[sd] channel files: FatFs error %d, logging stopped\n", r);
+        stats.errors++;
+        msglog_close();
+        return -1;
+    }
+    return any;
+}
+
 // ---- open / close ---------------------------------------------------------------
 
 int msglog_open(bool restore) {
@@ -587,6 +768,10 @@ int msglog_open(bool restore) {
         r = f_mkdir(MSGLOG_DIR);
     if (r != FR_OK && r != FR_EXIST) {
         printf("[sd] can't create " MSGLOG_DIR " (FatFs error %d)\n", r);
+        return -1;
+    }
+    if ((r = load_channels()) != FR_OK) {
+        printf("[sd] can't read " MSGLOG_CHANNELS " (FatFs error %d)\n", r);
         return -1;
     }
 
@@ -601,10 +786,10 @@ int msglog_open(bool restore) {
         return -1;
     while ((r = f_readdir(&dir, &fno)) == FR_OK && fno.fname[0]) {
         file_ent_t e;
-        if ((fno.fattrib & AM_DIR) || !path_conv(fno.fname, &e.conv))
+        if ((fno.fattrib & AM_DIR) || !path_conv(fno.fname, &e.conv, e.name))
             continue;
-        char path[48];
-        conv_path(e.conv, path, sizeof path); // FAT ignores case
+        char path[MSGLOG_PATH_MAX];
+        name_path(e.name, path);
         if ((r = scan_file(path, &e)) != FR_OK)
             break;
         if (e.last_n > max_n)
@@ -619,9 +804,11 @@ int msglog_open(bool restore) {
                     slot = i;
             if (files[slot].last_n >= e.last_n)
                 continue;
-        } else {
+        } else if (nfiles < FILES) {
             nfiles++;
             dms += e.conv.peer != 0;
+        } else {
+            continue;
         }
         files[slot] = e;
     }
