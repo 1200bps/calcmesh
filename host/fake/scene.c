@@ -47,6 +47,34 @@ static const struct {
 
 #define NNODES (int)(sizeof nodes / sizeof nodes[0])
 
+// Made-up positions: km north and east of us, for the nodes that share one
+// (the rest stay unplaced). Desert Ham is far enough off to sit outside a
+// fitted view's neighbours; Sailboat is out on the water.
+#define SCENE_LAT 455230000 // 45.523 N, 122.676 W
+#define SCENE_LON -1226760000
+static const struct {
+    int node;
+    float north, east;
+    int alt;
+} places[] = {
+    {0, 6.8f, -9.4f, 610},  {1, -1.2f, 2.1f, 48},    {2, 3.5f, 5.9f, 0},
+    {3, 9.6f, 4.2f, 402},   {4, -7.4f, -3.3f, 95},   {5, 0.6f, -0.9f, 61},
+    {6, -10.8f, 11.5f, 870}, {8, 2.2f, -4.6f, 2},    {11, 13.9f, -15.2f, 3},
+    {12, -16.0f, 19.0f, 1150}, {13, -95.0f, 160.0f, 1310}, {15, 1.4f, 1.0f, 30},
+    {16, 18.5f, 22.0f, 1640}, {17, -0.4f, 0.3f, 52}, {19, 5.1f, -12.8f, 0},
+    {20, -2.9f, -1.6f, 70}, {21, 4.4f, 0.8f, 120},   {23, 0.1f, -0.2f, 45},
+};
+
+static void place(uint32_t num, float north, float east, int alt) {
+    meshtastic_Position pos = meshtastic_Position_init_zero;
+    pos.has_latitude_i = pos.has_longitude_i = pos.has_altitude = true;
+    pos.latitude_i = SCENE_LAT + (int32_t)(north * 1e7f / 111.195f);
+    pos.longitude_i = SCENE_LON + (int32_t)(east * 1e7f / (111.195f * 0.70130f));
+    pos.altitude = alt;
+    pos.precision_bits = 32;
+    mesh_db_set_position(num, &pos);
+}
+
 uint32_t scene_node(int i) { return 0x10000000u + (uint32_t)i * 0x01010101u; }
 
 static void add_node(uint32_t num, const char *lname, const char *sname,
@@ -163,6 +191,10 @@ void scene_load(void) {
     for (int i = 0; i < NNODES; i++)
         add_node(scene_node(i), nodes[i].lname, nodes[i].sname, nodes[i].hops,
                  nodes[i].snr, nodes[i].ago, nodes[i].batt, nodes[i].fav);
+    place(SCENE_ME, 0, 0, 55);
+    for (size_t i = 0; i < sizeof places / sizeof places[0]; i++)
+        place(scene_node(places[i].node), places[i].north, places[i].east,
+              places[i].alt);
 
     // #LongFast
     uint32_t t = SCENE_NOW - 7200;

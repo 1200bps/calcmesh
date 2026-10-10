@@ -14,6 +14,7 @@ static const struct {
 } views[UI_SLOTS] = {
     [UI_TAB_NODES] = {"Nodes", ui_nodes_draw, ui_nodes_key},
     [UI_TAB_CHATS] = {"Chats", ui_chats_draw, ui_chats_key},
+    [UI_TAB_POSITION] = {"Position", ui_position_draw, ui_position_key},
     [UI_TAB_SETTINGS] = {"Settings", ui_settings_draw, ui_settings_key},
 };
 

@@ -382,6 +382,16 @@ static void handle_routing(const meshtastic_MeshPacket *p) {
         set_status(m, MESH_MSG_RELAYED, 0);
 }
 
+static void handle_position(const meshtastic_MeshPacket *p) {
+    meshtastic_Position pos = meshtastic_Position_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(p->decoded.payload.bytes, p->decoded.payload.size);
+    if (!pb_decode(&is, meshtastic_Position_fields, &pos))
+        return;
+    if (mesh_db_set_position(p->from, &pos))
+        printf("[link] position !%08lx %.5f,%.5f\n", (unsigned long)p->from,
+               pos.latitude_i / 1e7, pos.longitude_i / 1e7);
+}
+
 static void handle_packet(const meshtastic_MeshPacket *p) {
     if (p->has_rx_time && p->rx_time) {
         anchor_epoch = p->rx_time;
@@ -392,7 +402,12 @@ static void handle_packet(const meshtastic_MeshPacket *p) {
                (unsigned long)p->from, (unsigned long)p->to, p->channel);
         return;
     }
+    if (p->has_rx_time && p->rx_time && p->from != mesh_db.my_node_num)
+        mesh_db_heard(p->from, p->rx_time);
     switch (p->decoded.portnum) {
+    case meshtastic_PortNum_POSITION_APP:
+        handle_position(p);
+        break;
     case meshtastic_PortNum_TEXT_MESSAGE_APP:
         handle_text(p);
         break;
