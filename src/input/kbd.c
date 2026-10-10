@@ -30,6 +30,7 @@
 #define XFER_TIMEOUT_MS 50  // a transaction stuck longer than this resets the bus
 #define RETRY_MS 500        // after a NACK (keyboard absent or still booting)
 #define POWER_MS 5000       // re-read battery and backlights this often
+#define ABORTS_RECOVER 8    // NACKs in a row before trying to free the bus
 
 typedef enum {
     ST_WAIT,  // until `at`, then write the register
@@ -56,6 +57,7 @@ static struct {
     uint8_t head, count;
     bool online;
     bool ever_online;
+    uint32_t aborts; // NACKs in a row
 } kbd = {
     .lcd_bl = -1, .key_bl = -1, .battery = -1,
     .lcd_bl_want = -1, .key_bl_want = -1,
@@ -220,6 +222,10 @@ static bool got_entry(uint8_t state, uint8_t code) {
 
 void kbd_init(void) {
     kbd.power_at = get_absolute_time();
+    // A reboot mid-transfer (picotool, the 1200-baud touch) can leave the
+    // keyboard part-way through a byte, holding SDA low; our controller then
+    // loses arbitration on every start and never gets through.
+    bus_recover();
     bus_init();
     wait_until(ST_WAIT, 0);
 }
@@ -246,6 +252,10 @@ void kbd_task(void) {
         (void)hw()->clr_tx_abrt;
         requeue();
         set_online(false);
+        // Something holding SDA low looks the same from here: now and then,
+        // clock the bus free.
+        if (++kbd.aborts % ABORTS_RECOVER == 0)
+            bus_reset();
         wait_until(ST_WAIT, RETRY_MS * 1000);
         return;
     }
@@ -274,6 +284,7 @@ void kbd_task(void) {
     }
     uint8_t state = (uint8_t)hw()->data_cmd;
     uint8_t code = (uint8_t)hw()->data_cmd;
+    kbd.aborts = 0;
     set_online(true);
     if (kbd.reg != REG_FIFO) {
         // [register, value]; anything else means the keyboard wasn't

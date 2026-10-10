@@ -169,7 +169,8 @@ void sd_print_status(void) {
         printf(", %s card, %s", sd_card_type(), fs_name());
     if (!use_detect)
         printf(" (card detect ignored)");
-    printf("\nsettings: %s\n", settings_dirty() ? "not saved yet" : "saved");
+    printf("\nsettings: %s\n", settings_dirty() ? "changed, not saved yet"
+                                 : state == SD_READY ? "saved" : "no card, nothing changed");
     printf("history: %lu restored, %lu written, %lu not saved, %lu errors\n",
            (unsigned long)s->restored, (unsigned long)s->written,
            (unsigned long)s->dropped, (unsigned long)s->errors);
