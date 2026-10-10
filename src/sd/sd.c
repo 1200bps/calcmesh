@@ -6,12 +6,15 @@
 #include "pico/time.h"
 
 #include "ff.h"
+#include "mesh/link.h"
 #include "mesh/msgs.h"
 #include "sd/msglog.h"
+#include "sd/settings.h"
 
 #define POLL_MS 100
 #define DEBOUNCE 3          // polls the detect pin must hold still
 #define RETRY_MS 10000      // after a card error
+#define SETTINGS_SAVE_MS 3000 // after the last change, so a run of them is one write
 
 static FATFS fs;
 static sd_state_t state = SD_NO_CARD;
@@ -20,6 +23,10 @@ static bool present;           // debounced detect
 static int det_count;
 static absolute_time_t next_poll, next_retry;
 static bool error_reported;
+static bool channels_synced; // msglog knows the node's channel table
+static absolute_time_t settings_retry;
+
+static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
 
 static bool det_raw(void) { return !gpio_get(SD_DET_PIN); }
 
@@ -43,6 +50,10 @@ static void unmount(void) {
 static bool mount(bool restore) {
     FRESULT r = f_mount(&fs, "", 1);
     if (r == FR_OK) {
+        FRESULT sr = (FRESULT)settings_load();
+        if (sr != FR_OK)
+            printf("[sd] can't read " SETTINGS_PATH " (FatFs error %d)\n", sr);
+        channels_synced = false;
         int n = msglog_open(restore);
         if (n >= 0) {
             printf("[sd] %s card, %s", sd_card_type(), fs_name());
@@ -65,6 +76,7 @@ static bool mount(bool restore) {
 }
 
 void sd_init(void) {
+    settings_set_clock(now_ms);
     sd_card_pins_init();
     gpio_init(SD_DET_PIN);
     gpio_set_dir(SD_DET_PIN, GPIO_IN);
@@ -114,12 +126,36 @@ void sd_task(void) {
             mount(mesh_msgs_conv_count() == 0);
     }
 
-    if (state == SD_READY && msglog_pending() && msglog_flush() < 0) {
-        unmount();
-        state = SD_ERROR;
-        error_reported = true;
-        next_retry = make_timeout_time_ms(RETRY_MS);
+    if (state != SD_READY)
+        return;
+
+    // Once the node has told us its channels, history files follow them.
+    if (mesh_link_state() != MESH_LINK_READY)
+        channels_synced = false;
+    else if (!channels_synced) {
+        channels_synced = true;
+        if (msglog_sync_channels() < 0)
+            goto card_error;
     }
+
+    if (settings_dirty() && now_ms() - settings_changed_at() >= SETTINGS_SAVE_MS &&
+        time_reached(settings_retry)) {
+        FRESULT r = (FRESULT)settings_save();
+        if (r != FR_OK) {
+            printf("[sd] can't save " SETTINGS_PATH " (FatFs error %d)\n", r);
+            settings_retry = make_timeout_time_ms(RETRY_MS);
+        }
+    }
+
+    if (msglog_pending() && msglog_flush() < 0)
+        goto card_error;
+    return;
+
+card_error:
+    unmount();
+    state = SD_ERROR;
+    error_reported = true;
+    next_retry = make_timeout_time_ms(RETRY_MS);
 }
 
 sd_state_t sd_state(void) { return state; }
@@ -133,7 +169,8 @@ void sd_print_status(void) {
         printf(", %s card, %s", sd_card_type(), fs_name());
     if (!use_detect)
         printf(" (card detect ignored)");
-    printf("\nhistory: %lu restored, %lu written, %lu not saved, %lu errors\n",
+    printf("\nsettings: %s\n", settings_dirty() ? "not saved yet" : "saved");
+    printf("history: %lu restored, %lu written, %lu not saved, %lu errors\n",
            (unsigned long)s->restored, (unsigned long)s->written,
            (unsigned long)s->dropped, (unsigned long)s->errors);
 }

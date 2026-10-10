@@ -42,6 +42,8 @@ typedef struct {
     char name[12];
     uint8_t psk_len; // 0 none, 1 well-known shorthand, 16 AES128, 32 AES256
     uint8_t psk_index; // value of the 1-byte shorthand (1 = default key)
+    uint32_t psk_hash; // FNV-1a of the key bytes as the node sent them, to tell
+                       // channels apart without keeping the key
     bool uplink;
     bool downlink;
 } mesh_channel_t;

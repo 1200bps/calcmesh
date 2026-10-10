@@ -14,6 +14,7 @@
 #include "pico/stdlib.h"
 #include "tusb.h"
 
+#include "input/backlight.h"
 #include "input/kbd.h"
 #include "lcd/lcd.h"
 #include "mesh/cmd.h"
@@ -91,7 +92,7 @@ static void run_command(char *line) {
                 kbd_set_key_backlight((uint8_t)v);
             else
                 kbd_set_lcd_backlight((uint8_t)v);
-            printf("%s backlight set to %ld; the keyboard rounds it\n",
+            printf("%s backlight set to %ld; the keyboard rounds it, and it's saved\n",
                    keys ? "keyboard" : "screen", v);
         } else {
             printf("%s backlight %d\n", keys ? "keyboard" : "screen",
@@ -197,9 +198,10 @@ int main(void) {
         tud_task();
     printf("calcmesh up\n");
 
-    sd_init(); // before the link: loads saved messages into the store
+    sd_init(); // before the link: loads settings and saved messages
     meshlink_init();
     kbd_init();
+    backlight_init(); // saved levels, from the settings
     lcd_init();
     ui_init();
 
@@ -209,6 +211,7 @@ int main(void) {
         meshlink_task();
         console_task();
         kbd_task();
+        backlight_task();
         sd_task();
         ui_task();
         screenport_task();

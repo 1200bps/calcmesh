@@ -44,6 +44,9 @@ void mesh_db_set_channel(const meshtastic_Channel *ch) {
         c->psk_len = (uint8_t)s->psk.size;
         if (s->psk.size == 1)
             c->psk_index = s->psk.bytes[0];
+        c->psk_hash = 2166136261u;
+        for (size_t i = 0; i < s->psk.size; i++)
+            c->psk_hash = (c->psk_hash ^ s->psk.bytes[i]) * 16777619u;
         c->uplink = s->uplink_enabled;
         c->downlink = s->downlink_enabled;
     }

@@ -103,6 +103,8 @@ int mesh_msgs_count(mesh_conv_t conv);
 const mesh_msg_t *mesh_msgs_recent(mesh_conv_t conv, int i);
 
 void mesh_msgs_mark_read(mesh_conv_t conv);
+// Forget a conversation and its messages (the observer isn't told).
+void mesh_msgs_drop(mesh_conv_t conv);
 uint32_t mesh_msgs_unread_total(void);
 
 // The conversation a message belongs to.
