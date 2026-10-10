@@ -37,10 +37,12 @@ static const char *const desktop_names[] = {
 #define IDLE_MAX 120
 
 static void print_desktop(void) {
-    printf("desktop mode %s (%s), ends after %ld min idle\n",
-           desktop_names[meshlink_desktop()],
-           meshlink_bridged() ? "bridged" : "not bridged",
-           (long)settings_get_int(SET_DESKTOP_IDLE, IDLE_DEFAULT));
+    printf("desktop mode %s (%s)", desktop_names[meshlink_desktop()],
+           meshlink_bridged() ? "bridged" : "not bridged");
+    if (meshlink_desktop() == MESHLINK_DESKTOP_AUTO)
+        printf(", ends after %ld min idle",
+               (long)settings_get_int(SET_DESKTOP_IDLE, IDLE_DEFAULT));
+    printf("\n");
 }
 
 // Settings (sd/settings.h) that main.c puts into effect; backlight.c does
@@ -80,13 +82,22 @@ static void run_command(char *line) {
         return;
 
     if (strcmp(cmd, "desktop") == 0) {
-        if (arg) {
+        char *end;
+        long min = arg ? strtol(arg, &end, 10) : 0;
+        if (arg && end != arg && !*end) {
+            if (min < IDLE_MIN || min > IDLE_MAX) {
+                printf("idle timeout is %d-%d min\n", IDLE_MIN, IDLE_MAX);
+                return;
+            }
+            settings_set_int(SET_DESKTOP_IDLE, (int32_t)min); // saved, too
+            apply_settings();
+        } else if (arg) {
             size_t i;
             for (i = 0; i < count_of(desktop_names); i++)
                 if (strcmp(arg, desktop_names[i]) == 0)
                     break;
             if (i == count_of(desktop_names)) {
-                printf("usage: desktop [on|off|auto]\n");
+                printf("usage: desktop [on|off|auto|MINUTES]\n");
                 return;
             }
             settings_set(SET_DESKTOP_MODE, desktop_names[i]); // saved, too
@@ -134,6 +145,7 @@ static void run_command(char *line) {
         mesh_cmd_help();
         printf("desktop [on|off|auto]  bridge the node port to the node\n"
                "                       (auto: while a PC is using it)\n"
+               "desktop MINUTES        auto mode's idle timeout (6-120)\n"
                "keys [on|off]          also print PicoCalc keypresses here\n"
                "sd                     SD card and message history state\n"
                "bl [0-255]             screen backlight (steps of 16, 16-240)\n"
