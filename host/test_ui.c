@@ -3,8 +3,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "mesh/nodeedit.h"
 #include "msgs.h"
 #include "fb.h"
+#include "sd/settings.h"
 #include "nodedb.h"
 #include "scene.h"
 #include "ui.h"
@@ -169,8 +171,15 @@ static void test_flows(void) {
     CHECK(ui_tab() == UI_TAB_NODES);
     press(KBD_F1 + 1);
     CHECK(ui_tab() == UI_TAB_CHATS);
-    press(KBD_F1 + 4); // empty slot
+    press(KBD_F1 + 3); // empty slot
     CHECK(ui_tab() == UI_TAB_CHATS);
+    press(KBD_TAB); // skips the empty slots
+    CHECK(ui_tab() == UI_TAB_SETTINGS);
+    press(KBD_TAB);
+    CHECK(ui_tab() == UI_TAB_NODES);
+    ui_key(&back);
+    CHECK(ui_tab() == UI_TAB_SETTINGS);
+    press(KBD_F1 + 1);
 
     // Opening #LongFast marks it read
     mesh_conv_t lf = MESH_CONV_CHANNEL(0);
@@ -231,6 +240,162 @@ static void test_flows(void) {
           last(dm)->to == scene_node(0));
 }
 
+static void downs(int n) {
+    for (int i = 0; i < n; i++)
+        press(KBD_DOWN);
+}
+
+// The node answers a write: resyncs with whatever settings it now has
+static void node_back(void) {
+    fake_link_stats.syncs++;
+    fake_link_state = MESH_LINK_READY;
+    mesh_edit_poll();
+    ui_render();
+}
+
+static void test_settings_tab(void) {
+    ui_init();
+    scene_load();
+    mesh_edit_poll();
+    fake_admin_sent = 0;
+    press(KBD_F1 + 4);
+    CHECK(ui_tab() == UI_TAB_SETTINGS);
+    ui_render();
+
+    // Rows: long name, short name, role, NodeInfo, region, ...
+    downs(4);
+    press(KBD_RIGHT);
+    CHECK(mesh_edit.lora.region == meshtastic_Config_LoRaConfig_RegionCode_EU_433);
+    CHECK(mesh_edit_base.lora.region == meshtastic_Config_LoRaConfig_RegionCode_US);
+    press(KBD_LEFT);
+    press(KBD_LEFT); // never to Unset: wraps to the last region
+    CHECK(mesh_edit.lora.region != meshtastic_Config_LoRaConfig_RegionCode_UNSET);
+    press(KBD_RIGHT);
+    CHECK(mesh_edit_dirty() == 0);
+    press(KBD_RIGHT);
+    CHECK(mesh_edit_dirty() == MESH_EDIT_LORA);
+    press(KBD_UP); // NodeInfo: default (3h), then steps of its own
+    press(KBD_RIGHT);
+    CHECK(mesh_edit.device.node_info_broadcast_secs == 3600);
+    press(KBD_RIGHT);
+    CHECK(mesh_edit.device.node_info_broadcast_secs == 7200);
+    press(KBD_LEFT), press(KBD_LEFT), press(KBD_LEFT);
+    CHECK(mesh_edit.device.node_info_broadcast_secs == 0);
+    CHECK(mesh_edit_dirty() == MESH_EDIT_LORA);
+
+    // Text: Enter edits, Tab and F-keys stay in the field, Esc cancels
+    press(KBD_HOME);
+    press(KBD_ENTER);
+    press(KBD_TAB);
+    press(KBD_F1);
+    CHECK(ui_tab() == UI_TAB_SETTINGS);
+    for (int i = 0; i < 10; i++)
+        press(KBD_BACKSPACE);
+    type("Calc 12Tc");
+    press(KBD_ESC);
+    CHECK(strcmp(mesh_edit.owner.long_name, "PicoCalc") == 0);
+    press(KBD_ENTER);
+    for (int i = 0; i < 10; i++)
+        press(KBD_BACKSPACE);
+    press(KBD_ENTER); // empty: refused, still editing
+    type("Calc 12Tc");
+    for (int i = 0; i < 60; i++)
+        press('x'); // stops at the field's size
+    for (int i = 0; i < 60; i++)
+        press(KBD_BACKSPACE);
+    type("  Calc 12Tc ");
+    press(KBD_ENTER);
+    CHECK(strcmp(mesh_edit.owner.long_name, "Calc 12Tc") == 0);
+    CHECK(mesh_edit_dirty() == (MESH_EDIT_LORA | MESH_EDIT_OWNER));
+    ui_render();
+
+    // Write: asks first; N doesn't write, Y does
+    // long, short, role, nodeinfo, region, preset, hops, tx power, transmit, 3 channels,
+    // gps, interval, smart, fixed, power saving, bluetooth, then Write
+    downs(18);
+    press(KBD_ENTER);
+    ui_render();
+    press(KBD_F1); // the question holds the keys too
+    CHECK(ui_tab() == UI_TAB_SETTINGS);
+    press('n');
+    CHECK(fake_admin_sent == 0);
+    press(KBD_ENTER);
+    press('y');
+    // begin, set_owner, set_config(lora), commit
+    CHECK(fake_admin_sent == 4);
+    CHECK(mesh_edit_state() == MESH_EDIT_RESTARTING);
+    ui_render();
+
+    // Comes back with both: confirmed
+    meshtastic_Config cfg = meshtastic_Config_init_zero;
+    cfg.which_payload_variant = meshtastic_Config_lora_tag;
+    cfg.payload_variant.lora = mesh_edit.lora;
+    mesh_db_set_config(&cfg);
+    strcpy(mesh_db.owner.long_name, "Calc 12Tc");
+    node_back();
+    CHECK(mesh_edit_state() == MESH_EDIT_DONE);
+    CHECK(mesh_edit_dirty() == 0);
+    CHECK(mesh_edit_base.lora.region == meshtastic_Config_LoRaConfig_RegionCode_EU_433);
+    press(KBD_UP);
+    CHECK(mesh_edit_state() == MESH_EDIT_DONE); // still showing
+    downs(2); // role
+    press(KBD_RIGHT); // the next change clears it
+    CHECK(mesh_edit_state() == MESH_EDIT_IDLE);
+    press(KBD_LEFT);
+
+    // Comes back without it: flagged
+    press(KBD_HOME);
+    downs(6);
+    press(KBD_RIGHT); // hop limit 3 -> 4
+    CHECK(mesh_edit.lora.hop_limit == 4);
+    press(KBD_HOME);
+    downs(18);
+    press(KBD_ENTER);
+    press('y');
+    node_back();
+    CHECK(mesh_edit_state() == MESH_EDIT_MISMATCH);
+    CHECK(mesh_edit_mismatch() == MESH_EDIT_LORA);
+    CHECK(mesh_edit.lora.hop_limit == 3);
+
+    // Node not there: nothing changes, nothing is sent
+    fake_admin_sent = 0;
+    fake_link_state = MESH_LINK_PASSIVE;
+    press(KBD_HOME);
+    downs(6);
+    press(KBD_RIGHT);
+    CHECK(mesh_edit.lora.hop_limit == 3);
+    CHECK(!mesh_edit_write());
+    ui_render();
+    fake_link_state = MESH_LINK_READY;
+
+    // calcmesh's own: change at once, and get saved
+    press(KBD_HOME);
+    downs(18); // past Bluetooth: no Write row now
+    int lcd = settings_get_int(SET_SCREEN_BACKLIGHT, -1);
+    press(KBD_RIGHT);
+    CHECK(settings_get_int(SET_SCREEN_BACKLIGHT, -1) == lcd + 16);
+    CHECK(settings_dirty());
+    for (int i = 0; i < 30; i++)
+        press(KBD_RIGHT);
+    CHECK(settings_get_int(SET_SCREEN_BACKLIGHT, -1) == 240);
+    // Set off a step by the keyboard's own keys: back onto one
+    settings_set_int(SET_SCREEN_BACKLIGHT, 100);
+    press(KBD_LEFT);
+    CHECK(settings_get_int(SET_SCREEN_BACKLIGHT, -1) == 96);
+    press(KBD_DOWN);
+    settings_set_int(SET_KEYS_BACKLIGHT, 250); // the keyboard says off
+    press(KBD_RIGHT);
+    CHECK(settings_get_int(SET_KEYS_BACKLIGHT, -1) == 32);
+    press(KBD_DOWN);
+    press(KBD_LEFT);
+    CHECK(strcmp(settings_get(SET_DESKTOP_MODE), "off") == 0);
+    for (int i = 0; i < 40; i++)
+        press(KBD_PGDN);
+    press(KBD_ENTER); // key echo
+    CHECK(settings_get_bool(SET_KEY_ECHO, false));
+    ui_render();
+}
+
 // A full table with long, odd names, rendered under the sanitizers
 static void test_stress(void) {
     ui_init();
@@ -267,6 +432,7 @@ int main(void) {
     test_utf8();
     test_flush();
     test_flows();
+    test_settings_tab();
     test_stress();
     if (failures)
         fprintf(stderr, "%d failure(s)\n", failures);

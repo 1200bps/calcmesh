@@ -34,6 +34,9 @@
 // Settings in use (add new ones here, so the file's keys stay in one place):
 #define SET_SCREEN_BACKLIGHT "screen.backlight" // 0-255, as the keyboard reports it
 #define SET_KEYS_BACKLIGHT "keys.backlight"     // 0-255, as the keyboard reports it
+#define SET_DESKTOP_MODE "desktop.mode"         // auto, on or off (meshlink.h)
+#define SET_DESKTOP_IDLE "desktop.idle_min"     // auto mode's idle timeout, 6-120
+#define SET_KEY_ECHO "console.key_echo"         // print keypresses on the console
 
 // NULL if unset.
 const char *settings_get(const char *key);

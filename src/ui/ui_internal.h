@@ -53,4 +53,9 @@ bool ui_chats_key(const kbd_event_t *ev);
 void ui_chats_open(mesh_conv_t c); // switch to the Chats tab, in conversation c
 int ui_chats_unread(void);
 
-void ui_switch_tab(int tab);
+void ui_settings_draw(void);
+bool ui_settings_key(const kbd_event_t *ev);
+bool ui_settings_pending(void); // node changes not written yet
+bool ui_settings_modal(void);   // editing a field or confirming: keys stay here
+
+void ui_switch_tab(int tab); // a tab that doesn't exist is ignored

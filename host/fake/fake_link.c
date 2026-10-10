@@ -12,6 +12,21 @@ mesh_send_result_t fake_send_result = MESH_SEND_OK;
 uint32_t fake_epoch;
 
 bool fake_node_silent;
+mesh_link_stats_t fake_link_stats;
+uint32_t fake_ms;
+int fake_admin_sent;
+
+const mesh_link_stats_t *mesh_link_stats(void) { return &fake_link_stats; }
+uint32_t mesh_link_ms(void) { return fake_ms; }
+void mesh_link_request_config(void) { fake_link_state = MESH_LINK_CONFIGURING; }
+
+bool mesh_link_send_admin(const struct _meshtastic_AdminMessage *a) {
+    (void)a;
+    if (fake_link_state != MESH_LINK_READY)
+        return false;
+    fake_admin_sent++;
+    return true;
+}
 
 mesh_link_state_t mesh_link_state(void) { return fake_link_state; }
 

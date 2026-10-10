@@ -22,7 +22,12 @@ void mesh_db_set_metadata(const meshtastic_DeviceMetadata *md) {
 }
 
 void mesh_db_set_config(const meshtastic_Config *cfg) {
-    if (cfg->which_payload_variant != meshtastic_Config_lora_tag)
+    pb_size_t tag = cfg->which_payload_variant;
+    if (tag < MESH_CONFIG_SLOTS) {
+        mesh_db.config[tag] = *cfg;
+        mesh_db.config_have |= 1u << tag;
+    }
+    if (tag != meshtastic_Config_lora_tag)
         return;
     const meshtastic_Config_LoRaConfig *l = &cfg->payload_variant.lora;
     mesh_db.has_lora = true;
@@ -32,9 +37,29 @@ void mesh_db_set_config(const meshtastic_Config *cfg) {
     mesh_db.hop_limit = (uint8_t)l->hop_limit;
 }
 
+const meshtastic_Config *mesh_db_config(pb_size_t tag) {
+    return tag < MESH_CONFIG_SLOTS && (mesh_db.config_have >> tag & 1) ? &mesh_db.config[tag]
+                                                                        : NULL;
+}
+
+void mesh_db_set_module_config(const meshtastic_ModuleConfig *mc) {
+    pb_size_t tag = mc->which_payload_variant;
+    if (tag >= MESH_MODULE_SLOTS)
+        return;
+    mesh_db.module[tag] = *mc;
+    mesh_db.module_have |= 1u << tag;
+}
+
+const meshtastic_ModuleConfig *mesh_db_module(pb_size_t tag) {
+    return tag < MESH_MODULE_SLOTS && (mesh_db.module_have >> tag & 1) ? &mesh_db.module[tag]
+                                                                        : NULL;
+}
+
 void mesh_db_set_channel(const meshtastic_Channel *ch) {
     if (ch->index < 0 || ch->index >= MESH_MAX_CHANNELS)
         return;
+    mesh_db.channel_full[ch->index] = *ch;
+    mesh_db.channel_have |= (uint8_t)(1u << ch->index);
     mesh_channel_t *c = &mesh_db.channels[ch->index];
     memset(c, 0, sizeof *c);
     c->role = (uint8_t)ch->role;
@@ -108,6 +133,10 @@ mesh_node_t *mesh_db_upsert_node(const meshtastic_NodeInfo *ni) {
         n->latitude_i = ni->position.latitude_i;
         n->longitude_i = ni->position.longitude_i;
         n->altitude = ni->position.has_altitude ? ni->position.altitude : 0;
+    }
+    if (ni->has_user && ni->num == mesh_db.my_node_num && ni->num) {
+        mesh_db.owner = ni->user;
+        mesh_db.has_owner = true;
     }
     n->via_mqtt = ni->via_mqtt;
     n->is_favorite = ni->is_favorite;

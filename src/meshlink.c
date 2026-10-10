@@ -29,8 +29,8 @@ static volatile uint32_t rx_overruns;
 // clears HUPCL so closing the port doesn't reset ESP32 nodes, which leaves
 // DTR up after it exits. So a session starts when the PC sends something and
 // ends on DTR down, the client's ToRadio.disconnect, or this much silence
-// (clients heartbeat every 5 minutes).
-#define DESKTOP_IDLE_MS (10 * 60 * 1000)
+// (clients heartbeat every 5 minutes; meshlink_set_desktop_idle_min()).
+static uint32_t desktop_idle_ms = 10 * 60 * 1000;
 
 static meshlink_desktop_t desktop_mode = MESHLINK_DESKTOP_AUTO;
 static bool bridged;
@@ -110,7 +110,7 @@ static void update_bridge(void) {
             set_bridged(pc && tud_cdc_n_available(MESHLINK_USB_CDC));
         } else {
             uint32_t idle = to_ms_since_boot(get_absolute_time()) - pc_last_rx_ms;
-            if (!pc || pc_disconnected || idle >= DESKTOP_IDLE_MS)
+            if (!pc || pc_disconnected || idle >= desktop_idle_ms)
                 set_bridged(false);
         }
         break;
@@ -177,6 +177,10 @@ void meshlink_task(void) {
 void meshlink_set_desktop(meshlink_desktop_t mode) {
     desktop_mode = mode;
     update_bridge();
+}
+
+void meshlink_set_desktop_idle_min(unsigned minutes) {
+    desktop_idle_ms = minutes * 60u * 1000u;
 }
 
 meshlink_desktop_t meshlink_desktop(void) { return desktop_mode; }

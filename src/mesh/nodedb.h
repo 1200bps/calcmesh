@@ -13,6 +13,10 @@
 #endif
 #define MESH_MAX_CHANNELS 8
 
+// Payload tags run 1..10 for Config and 1..17 for ModuleConfig.
+#define MESH_CONFIG_SLOTS 12
+#define MESH_MODULE_SLOTS 20
+
 #define MESH_HOPS_UNKNOWN 0xFF
 #define MESH_BATTERY_UNKNOWN 0xFF
 #define MESH_BATTERY_POWERED 101 // firmware reports >100 for external power
@@ -66,6 +70,19 @@ typedef struct {
 
     mesh_channel_t channels[MESH_MAX_CHANNELS];
 
+    // Everything the node sent about its settings, as it sent it, for the
+    // Settings tab to show, edit and write back whole (nodeedit.h).
+    // config[] and module[] are indexed by payload tag (meshtastic_Config_lora_tag
+    // and so on); bit n of *_have says whether slot n arrived.
+    bool has_owner;
+    meshtastic_User owner; // our node's User, from its NodeInfo
+    uint32_t config_have;
+    meshtastic_Config config[MESH_CONFIG_SLOTS];
+    uint32_t module_have;
+    meshtastic_ModuleConfig module[MESH_MODULE_SLOTS];
+    uint8_t channel_have; // bit n: channel n arrived
+    meshtastic_Channel channel_full[MESH_MAX_CHANNELS];
+
     uint16_t node_count;
     uint32_t evicted; // nodes pushed out because the table was full
     mesh_node_t nodes[MESH_MAX_NODES];
@@ -78,6 +95,10 @@ void mesh_db_set_my_info(const meshtastic_MyNodeInfo *mi);
 void mesh_db_set_metadata(const meshtastic_DeviceMetadata *md);
 void mesh_db_set_config(const meshtastic_Config *cfg);
 void mesh_db_set_channel(const meshtastic_Channel *ch);
+void mesh_db_set_module_config(const meshtastic_ModuleConfig *mc);
+// A config or module config section, or NULL if the node hasn't sent it.
+const meshtastic_Config *mesh_db_config(pb_size_t tag);
+const meshtastic_ModuleConfig *mesh_db_module(pb_size_t tag);
 mesh_node_t *mesh_db_upsert_node(const meshtastic_NodeInfo *ni);
 mesh_node_t *mesh_db_find(uint32_t num);
 
