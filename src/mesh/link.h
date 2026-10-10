@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include "msgs.h"
+#include "pb.h"
 
 typedef struct {
     // Send bytes to the node. Must send all of them (block if needed).
@@ -107,6 +108,12 @@ bool mesh_link_send_admin(const struct _meshtastic_AdminMessage *a);
 // routing error carry as request_id.
 bool mesh_link_send_admin_to(uint32_t to, const struct _meshtastic_AdminMessage *a,
                              bool want_response, uint32_t *id);
+
+// Ask a node for telemetry (telemetry.proto): a Telemetry with variant (a
+// meshtastic_Telemetry_*_tag) set and empty, want_response. Its answer is a
+// Telemetry with the same request_id (metrics.h keeps it). To our own node
+// it never reaches the radio. *id (if given) gets the packet id.
+bool mesh_link_send_telemetry_req(uint32_t to, pb_size_t variant, uint32_t *id);
 
 // Admin messages that arrive (answers from other nodes), and routing results
 // (acks and errors) for admin messages we sent. error is a

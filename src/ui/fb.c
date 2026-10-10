@@ -1,5 +1,6 @@
 #include "fb.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 uint8_t fb[FB_H][FB_STRIDE];
@@ -66,6 +67,22 @@ void fb_fill(int x, int y, int w, int h, uint8_t c) {
 
 void fb_hline(int x, int y, int w, uint8_t c) { fb_fill(x, y, w, 1, c); }
 void fb_vline(int x, int y, int h, uint8_t c) { fb_fill(x, y, 1, h, c); }
+
+void fb_line(int x0, int y0, int x1, int y1, uint8_t c) {
+    int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    for (;;) {
+        fb_pixel(x0, y0, c);
+        if (x0 == x1 && y0 == y1)
+            break;
+        int e2 = 2 * err;
+        if (e2 >= dy)
+            err += dy, x0 += sx;
+        if (e2 <= dx)
+            err += dx, y0 += sy;
+    }
+}
 
 void fb_rect(int x, int y, int w, int h, uint8_t c) {
     if (w <= 0 || h <= 0)

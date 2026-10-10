@@ -213,6 +213,35 @@ static int tour(const char *dir) {
     key("home");
     err |= shot(dir, "31-remote-refused");
     fake_remote_error = 0;
+
+    // Metrics (32 on)
+    scene_load();
+    key("f4");
+    err |= shot(dir, "32-metrics");
+    key("enter");
+    err |= shot(dir, "33-metrics-ours");
+    key("end");
+    err |= shot(dir, "34-metrics-ours-local");
+    key("esc"), key("down"), key("down"), key("enter");
+    err |= shot(dir, "35-metrics-ridge");
+    key("pgdn");
+    err |= shot(dir, "36-metrics-ridge-more");
+    type("l");
+    fake_ms += 12000;
+    err |= shot(dir, "37-metrics-asking");
+    scene_telemetry_answer(0);
+    key("end");
+    err |= shot(dir, "38-metrics-answered");
+    key("esc"), key("home"), key("enter");
+    key("right"), key("right");
+    type("p");
+    scene_telemetry_answer(0);
+    err |= shot(dir, "39-metrics-no-sensor");
+    key("esc"), key("home");
+    for (int i = 0; i < 7; i++)
+        key("down");
+    key("enter");
+    err |= shot(dir, "40-metrics-weather");
     return err;
 }
 

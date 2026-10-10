@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "frame.h"
+#include "metrics.h"
 #include "msgs.h"
 #include "nodedb.h"
 #include "pb_decode.h"
@@ -11,6 +12,7 @@
 
 #include "meshtastic/admin.pb.h"
 #include "meshtastic/mesh.pb.h"
+#include "meshtastic/telemetry.pb.h"
 
 // The Python client sends this many START2 bytes and waits before its first
 // frame, so a node whose serial port is idle or asleep resyncs.
@@ -365,13 +367,16 @@ static void handle_routing(const meshtastic_MeshPacket *p) {
     uint32_t req = p->decoded.request_id;
     mesh_msg_t *m = mesh_msgs_find_outgoing(req);
     bool admin = !m && is_admin_id(req);
-    if (!m && !admin)
-        return;
     meshtastic_Routing r = meshtastic_Routing_init_zero;
     pb_istream_t is = pb_istream_from_buffer(p->decoded.payload.bytes, p->decoded.payload.size);
-    if (!pb_decode(&is, meshtastic_Routing_fields, &r) ||
+    if (!req || !pb_decode(&is, meshtastic_Routing_fields, &r) ||
         r.which_variant != meshtastic_Routing_error_reason_tag)
         return;
+    if (!m && !admin) {
+        // Perhaps a telemetry request's
+        mesh_metrics_routing(req, p->from, (uint8_t)r.error_reason);
+        return;
+    }
     if (admin) {
         if (admin_routing_cb)
             admin_routing_cb(req, p->from, (uint8_t)r.error_reason);
@@ -402,6 +407,24 @@ static void handle_position(const meshtastic_MeshPacket *p) {
                pos.latitude_i / 1e7, pos.longitude_i / 1e7);
 }
 
+static void handle_telemetry(const meshtastic_MeshPacket *p) {
+    static meshtastic_Telemetry t; // ~300 bytes
+    memset(&t, 0, sizeof t);
+    pb_istream_t is = pb_istream_from_buffer(p->decoded.payload.bytes, p->decoded.payload.size);
+    if (!pb_decode(&is, meshtastic_Telemetry_fields, &t))
+        return;
+    uint32_t time = p->has_rx_time ? p->rx_time : 0;
+    if (mesh_metrics_add(p->from, &t, time))
+        printf("[link] telemetry !%08lx: %s%s\n", (unsigned long)p->from,
+               t.which_variant == meshtastic_Telemetry_device_metrics_tag        ? "device"
+               : t.which_variant == meshtastic_Telemetry_environment_metrics_tag ? "environment"
+               : t.which_variant == meshtastic_Telemetry_power_metrics_tag       ? "power"
+                                                                                 : "local stats",
+               p->decoded.request_id ? " (an answer)" : "");
+    // Even a variant we don't keep answers the request
+    mesh_metrics_answer(p->decoded.request_id, p->from);
+}
+
 static void handle_packet(const meshtastic_MeshPacket *p) {
     if (p->has_rx_time && p->rx_time) {
         anchor_epoch = p->rx_time;
@@ -423,6 +446,9 @@ static void handle_packet(const meshtastic_MeshPacket *p) {
         break;
     case meshtastic_PortNum_ROUTING_APP:
         handle_routing(p);
+        break;
+    case meshtastic_PortNum_TELEMETRY_APP:
+        handle_telemetry(p);
         break;
     case meshtastic_PortNum_ADMIN_APP: {
         static meshtastic_AdminMessage a; // ~500 bytes
@@ -461,6 +487,9 @@ static void handle_from_radio(const meshtastic_FromRadio *fr) {
         if (!mesh_db_upsert_node(&fr->node_info))
             printf("[link] node table full, dropped !%08lx\n",
                    (unsigned long)fr->node_info.num);
+        if (fr->node_info.has_device_metrics)
+            mesh_metrics_nodeinfo(fr->node_info.num, &fr->node_info.device_metrics,
+                                  fr->node_info.last_heard);
         break;
     case meshtastic_FromRadio_channel_tag:
         begin_dump();
@@ -722,6 +751,37 @@ bool mesh_link_send_admin_to(uint32_t to, const meshtastic_AdminMessage *a, bool
         return false;
     admin_ids[admin_next++ % ADMIN_IDS] = p->id;
     stats.admin_tx++;
+    if (id)
+        *id = p->id;
+    return true;
+}
+
+bool mesh_link_send_telemetry_req(uint32_t to, pb_size_t variant, uint32_t *id) {
+    if (state != MESH_LINK_READY || !mesh_db.my_node_num || !to)
+        return false;
+    // The request is a Telemetry with the wanted variant present but empty
+    static meshtastic_Telemetry t;
+    memset(&t, 0, sizeof t);
+    t.which_variant = variant;
+    memset(&to_radio, 0, sizeof to_radio);
+    to_radio.which_payload_variant = meshtastic_ToRadio_packet_tag;
+    meshtastic_MeshPacket *p = &to_radio.packet;
+    p->to = to;
+    p->channel = 0; // or PKI, which the node picks when it has the key
+    p->id = next_packet_id();
+    p->hop_limit = to == mesh_db.my_node_num ? 0
+                   : mesh_db.hop_limit       ? mesh_db.hop_limit
+                                             : DEFAULT_HOP_LIMIT;
+    p->which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    p->decoded.portnum = meshtastic_PortNum_TELEMETRY_APP;
+    p->decoded.want_response = true;
+    pb_ostream_t os = pb_ostream_from_buffer(p->decoded.payload.bytes,
+                                             sizeof p->decoded.payload.bytes);
+    if (!pb_encode(&os, meshtastic_Telemetry_fields, &t))
+        return false;
+    p->decoded.payload.size = (pb_size_t)os.bytes_written;
+    if (!send_to_radio())
+        return false;
     if (id)
         *id = p->id;
     return true;

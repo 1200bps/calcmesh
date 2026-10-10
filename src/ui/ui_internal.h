@@ -56,6 +56,9 @@ int ui_chats_unread(void);
 void ui_position_draw(void);
 bool ui_position_key(const kbd_event_t *ev);
 
+void ui_metrics_draw(void);
+bool ui_metrics_key(const kbd_event_t *ev);
+
 void ui_settings_draw(void);
 bool ui_settings_key(const kbd_event_t *ev);
 bool ui_settings_pending(void); // node changes not written yet

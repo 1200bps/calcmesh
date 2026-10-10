@@ -1,8 +1,10 @@
 #include "scene.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "mesh/metrics.h"
 #include "mesh/nodeedit.h"
 #include "msgs.h"
 #include "nodedb.h"
@@ -167,6 +169,153 @@ static void scene_remote(void) {
     fake_remote_error = 0;
 }
 
+// --- telemetry ---------------------------------------------------------------
+
+static void tel_device(uint32_t num, uint32_t t, int batt, float volts, float chutil, float airtx,
+                       uint32_t uptime) {
+    meshtastic_Telemetry m = meshtastic_Telemetry_init_zero;
+    m.which_variant = meshtastic_Telemetry_device_metrics_tag;
+    meshtastic_DeviceMetrics *d = &m.variant.device_metrics;
+    d->has_battery_level = d->has_voltage = d->has_channel_utilization = true;
+    d->has_air_util_tx = d->has_uptime_seconds = true;
+    d->battery_level = (uint32_t)batt;
+    d->voltage = volts;
+    d->channel_utilization = chutil;
+    d->air_util_tx = airtx;
+    d->uptime_seconds = uptime;
+    mesh_metrics_add(num, &m, t);
+}
+
+static void tel_temp(uint32_t num, uint32_t t, float temp, float rh, float hpa) {
+    meshtastic_Telemetry m = meshtastic_Telemetry_init_zero;
+    m.which_variant = meshtastic_Telemetry_environment_metrics_tag;
+    meshtastic_EnvironmentMetrics *v = &m.variant.environment_metrics;
+    v->has_temperature = v->has_relative_humidity = v->has_barometric_pressure = true;
+    v->temperature = temp;
+    v->relative_humidity = rh;
+    v->barometric_pressure = hpa;
+    mesh_metrics_add(num, &m, t);
+}
+
+static void tel_local(uint32_t num, uint32_t t, uint32_t uptime, uint32_t tx, uint32_t rx) {
+    meshtastic_Telemetry m = meshtastic_Telemetry_init_zero;
+    m.which_variant = meshtastic_Telemetry_local_stats_tag;
+    meshtastic_LocalStats *l = &m.variant.local_stats;
+    l->uptime_seconds = uptime;
+    l->channel_utilization = 13.4f;
+    l->air_util_tx = 1.07f;
+    l->num_packets_tx = tx;
+    l->num_packets_rx = rx;
+    l->num_packets_rx_bad = rx / 140;
+    l->num_rx_dupe = rx / 3;
+    l->num_tx_relay = tx * 2 / 3;
+    l->num_tx_relay_canceled = tx / 5;
+    l->num_tx_dropped = 2;
+    l->num_online_nodes = 18;
+    l->num_total_nodes = 27;
+    l->noise_floor = -108;
+    l->heap_total_bytes = 296 * 1024;
+    l->heap_free_bytes = 118 * 1024;
+    mesh_metrics_add(num, &m, t);
+}
+
+// A day or so of telemetry from the nodes that send it
+static void scene_metrics(void) {
+    mesh_metrics_clear();
+    // Ours: every minute to the client, kept every ten; the PicoCalc's 18650
+    // running down slowly, the channel busier in the evening
+    for (int i = 0; i < 8 * 60; i++) {
+        uint32_t t = SCENE_NOW - (uint32_t)(8 * 60 - i) * 60;
+        float f = i / 480.0f;
+        float chu = 9 + 6 * sinf(f * 7) + 3 * sinf(f * 23) + 4 * f;
+        tel_device(SCENE_ME, t, 92 - (int)(14 * f), 4.11f - 0.15f * f, chu, 0.9f + 0.4f * f,
+                   98000 + (uint32_t)i * 60);
+    }
+    tel_local(SCENE_ME, SCENE_NOW - 400, 126400, 412, 5310);
+
+    // Ridge Repeater: solar, every 30 min for a day; the cell charges by day
+    uint32_t rdg = scene_node(0);
+    for (int i = 0; i < 48; i++) {
+        uint32_t t = SCENE_NOW - (uint32_t)(48 - i) * 1800 + 40;
+        float sun = sinf((i - 38) / 48.0f * 6.2832f); // > 0 by day
+        float v = 12.55f + (sun > 0 ? 1.15f * sun : 0.12f * sun) - 0.002f * i;
+        tel_device(rdg, t, 80 + (int)(12 * (sun > 0 ? sun : 0)), v, 11 + 3 * sinf(i * 0.9f) + 2 * sinf(i * 0.37f) + (i % 5 == 2 ? 3 : 0),
+                   2.4f, 1900000 + (uint32_t)i * 1800);
+        tel_temp(rdg, t + 5, 4.5f + 7 * sun, 70 - 15 * sun, 1013.2f - i * 0.05f);
+    }
+    meshtastic_Telemetry m = meshtastic_Telemetry_init_zero;
+    m.which_variant = meshtastic_Telemetry_power_metrics_tag;
+    meshtastic_PowerMetrics *w = &m.variant.power_metrics;
+    w->has_ch1_voltage = w->has_ch1_current = w->has_ch2_voltage = w->has_ch2_current = true;
+    w->has_ch3_voltage = w->has_ch3_current = true;
+    w->ch1_voltage = 18.42f, w->ch1_current = 312.5f;
+    w->ch2_voltage = 13.21f, w->ch2_current = 201.0f;
+    w->ch3_voltage = 5.02f, w->ch3_current = 88.4f;
+    mesh_metrics_add(rdg, &m, SCENE_NOW - 1700);
+
+    // Hilltop Solar: panel iced over, the cell going down all day
+    uint32_t hts = scene_node(3);
+    for (int i = 0; i < 40; i++) {
+        uint32_t t = SCENE_NOW - (uint32_t)(40 - i) * 1800 + 600;
+        tel_device(hts, t, 71 - (int)(29 * i / 39.0f), 3.96f - 0.34f * i / 39.0f,
+                   6 + 2 * sinf(i * 1.3f), 0.6f, 3400000 + (uint32_t)i * 1800);
+        tel_temp(hts, t + 3, -1.5f - 2.5f * sinf(i / 6.0f), 93, 871.4f);
+    }
+
+    // Weather Stn: everything a weather station has
+    uint32_t wx = scene_node(21);
+    tel_device(wx, SCENE_NOW - 3000, 101, 5.08f, 12.5f, 0.3f, 640000);
+    m = (meshtastic_Telemetry)meshtastic_Telemetry_init_zero;
+    m.which_variant = meshtastic_Telemetry_environment_metrics_tag;
+    meshtastic_EnvironmentMetrics *v = &m.variant.environment_metrics;
+    v->has_temperature = v->has_relative_humidity = v->has_barometric_pressure = true;
+    v->temperature = 11.4f, v->relative_humidity = 82, v->barometric_pressure = 1009.6f;
+    v->has_wind_speed = v->has_wind_direction = v->has_wind_gust = true;
+    v->wind_speed = 3.4f, v->wind_direction = 250, v->wind_gust = 6.1f;
+    v->has_rainfall_1h = v->has_rainfall_24h = v->has_lux = true;
+    v->rainfall_1h = 0.4f, v->rainfall_24h = 6.2f, v->lux = 1430;
+    mesh_metrics_add(wx, &m, SCENE_NOW - 1200);
+
+    // A few that only send device metrics, now and then
+    static const struct { int node, batt; float v, chu, air; } dev[] = {
+        {1, 87, 4.02f, 10.8f, 0.7f}, {2, 64, 3.84f, 9.2f, 1.9f}, {5, 101, 4.98f, 14.1f, 3.1f},
+        {8, 77, 3.93f, 7.5f, 0.2f},  {23, 101, 5.11f, 13.0f, 0.4f}, {4, 15, 3.52f, 4.0f, 0.1f},
+    };
+    for (size_t i = 0; i < sizeof dev / sizeof dev[0]; i++) {
+        uint32_t num = scene_node(dev[i].node);
+        const mesh_node_t *n = mesh_db_find(num);
+        uint32_t last = n ? n->last_heard : SCENE_NOW;
+        for (int k = 3; k >= 0; k--)
+            tel_device(num, last - (uint32_t)k * 1800, dev[i].batt + k, dev[i].v + 0.01f * k,
+                       dev[i].chu - k, dev[i].air, 500000);
+    }
+}
+
+// The fake mesh's answer to the request waiting in fake_link.c
+bool scene_telemetry_answer(int error) {
+    if (!fake_tel_id)
+        return false;
+    uint32_t id = fake_tel_id, to = fake_tel_to;
+    fake_tel_id = 0;
+    if (error) {
+        mesh_metrics_routing(id, to, (uint8_t)error);
+        return true;
+    }
+    switch (fake_tel_variant) {
+    case meshtastic_Telemetry_local_stats_tag:
+        tel_local(to, SCENE_NOW, 1987200, 2210, 30412);
+        break;
+    case meshtastic_Telemetry_device_metrics_tag:
+        tel_device(to, SCENE_NOW, 88, 13.05f, 12.1f, 2.5f, 1987200);
+        break;
+    default:
+        mesh_metrics_routing(id, to, meshtastic_Routing_Error_NO_RESPONSE);
+        return true;
+    }
+    mesh_metrics_answer(id, to);
+    return true;
+}
+
 void scene_load(void) {
     mesh_db_clear();
     mesh_msgs_clear();
@@ -231,6 +380,7 @@ void scene_load(void) {
     for (int i = 0; i < NNODES; i++)
         add_node(scene_node(i), nodes[i].lname, nodes[i].sname, nodes[i].hops,
                  nodes[i].snr, nodes[i].ago, nodes[i].batt, nodes[i].fav);
+    scene_metrics();
     place(SCENE_ME, 0, 0, 55);
     for (size_t i = 0; i < sizeof places / sizeof places[0]; i++)
         place(scene_node(places[i].node), places[i].north, places[i].east,

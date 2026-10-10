@@ -26,6 +26,13 @@ extern mesh_edit_t fake_remote;
 extern int fake_remote_error;
 extern int fake_remote_sent;
 bool fake_remote_answer(void);
+// Telemetry requests: the one waiting (id 0: none), and how many were sent.
+// scene_telemetry_answer() has the fake mesh answer it with made-up numbers,
+// or with a routing error.
+extern uint32_t fake_tel_to, fake_tel_id;
+extern pb_size_t fake_tel_variant;
+extern int fake_tel_sent;
+bool scene_telemetry_answer(int error);
 extern int fake_sd_state;                   // sd_state(): sd_state_t
 
 void scene_load(void);           // nodes, channels and messages

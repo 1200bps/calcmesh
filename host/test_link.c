@@ -8,6 +8,7 @@
 #include "frame.h"
 #include "cmd.h"
 #include "link.h"
+#include "metrics.h"
 #include "msgs.h"
 #include "nodedb.h"
 #include "nodeedit.h"
@@ -1207,6 +1208,165 @@ static void test_remote_admin(void) {
     CHECK(strcmp(mesh_edit_base.owner.long_name, "Calcmesh Base") == 0);
 }
 
+static meshtastic_FromRadio fr_telemetry(uint32_t from, uint32_t request_id, uint32_t rx_time,
+                                         const meshtastic_Telemetry *t) {
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_packet_tag;
+    meshtastic_MeshPacket *p = &fr.packet;
+    p->from = from;
+    p->to = request_id ? ME : MESH_ADDR_BROADCAST;
+    p->id = 0x4000 + rx_time % 1000;
+    p->rx_time = rx_time;
+    p->has_rx_time = rx_time != 0;
+    p->which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    p->decoded.portnum = meshtastic_PortNum_TELEMETRY_APP;
+    p->decoded.request_id = request_id;
+    pb_ostream_t os = pb_ostream_from_buffer(p->decoded.payload.bytes,
+                                             sizeof p->decoded.payload.bytes);
+    CHECK(pb_encode(&os, meshtastic_Telemetry_fields, t));
+    p->decoded.payload.size = (pb_size_t)os.bytes_written;
+    return fr;
+}
+
+static meshtastic_Telemetry device(uint32_t batt, float volts, float chutil) {
+    meshtastic_Telemetry t = meshtastic_Telemetry_init_zero;
+    t.which_variant = meshtastic_Telemetry_device_metrics_tag;
+    meshtastic_DeviceMetrics *d = &t.variant.device_metrics;
+    d->has_battery_level = d->has_voltage = d->has_channel_utilization = true;
+    d->battery_level = batt;
+    d->voltage = volts;
+    d->channel_utilization = chutil;
+    return t;
+}
+
+// The telemetry request the link sent last
+static meshtastic_Telemetry sent_request(void) {
+    meshtastic_Telemetry t = meshtastic_Telemetry_init_zero;
+    node_read();
+    CHECK(last_packet.decoded.portnum == meshtastic_PortNum_TELEMETRY_APP);
+    pb_istream_t is = pb_istream_from_buffer(last_packet.decoded.payload.bytes,
+                                             last_packet.decoded.payload.size);
+    CHECK(pb_decode(&is, meshtastic_Telemetry_fields, &t));
+    return t;
+}
+
+static void test_metrics(void) {
+    link_up();
+    mesh_metrics_clear();
+    node_read();
+
+    // A broadcast from the hill: stored, a history point, and the Nodes
+    // tab's battery follows
+    meshtastic_Telemetry t = device(55, 3.81f, 12.5f);
+    deliver(fr_telemetry(0x11111111, 0, 1700001000, &t));
+    const mesh_metrics_t *e = mesh_metrics_find(0x11111111);
+    CHECK(e && e->have[MET_DEVICE] && !e->have[MET_LOCAL]);
+    CHECK(e && e->time[MET_DEVICE] == 1700001000 && e->device.battery_level == 55);
+    CHECK(e && e->nhist == 1 && e->hist[0].mv == 3810 && e->hist[0].chutil == 25 &&
+          e->hist[0].batt == 55 && e->hist[0].temp == MET_NONE_TEMP);
+    CHECK(mesh_db_find(0x11111111)->battery == 55);
+
+    // Environment a few seconds later shares the point; device again within
+    // the gap doesn't add one; after it, it does
+    meshtastic_Telemetry env = meshtastic_Telemetry_init_zero;
+    env.which_variant = meshtastic_Telemetry_environment_metrics_tag;
+    env.variant.environment_metrics.has_temperature = true;
+    env.variant.environment_metrics.temperature = -3.46f;
+    deliver(fr_telemetry(0x11111111, 0, 1700001005, &env));
+    CHECK(e->nhist == 1 && e->hist[0].temp == -35 && e->env.has_temperature);
+    deliver(fr_telemetry(0x11111111, 0, 1700001060, &t));
+    CHECK(e->nhist == 1);
+    t = device(54, 3.80f, 9);
+    deliver(fr_telemetry(0x11111111, 0, 1700001000 + MESH_METRICS_GAP_S, &t));
+    CHECK(e->nhist == 2 && mesh_metrics_point(e, 1)->mv == 3800);
+    CHECK(mesh_metrics_point(e, 1)->temp == MET_NONE_TEMP);
+    // A clock that went backwards keeps the numbers but adds no point
+    deliver(fr_telemetry(0x11111111, 0, 1600000000, &t));
+    CHECK(e->nhist == 2 && e->time[MET_DEVICE] == 1600000000);
+
+    // The history is a ring
+    for (int i = 0; i < MESH_METRICS_HIST + 5; i++) {
+        t = device(50, 3.0f + i / 100.0f, 1);
+        deliver(fr_telemetry(0x33333333, 0, 1700100000 + (uint32_t)i * MESH_METRICS_GAP_S, &t));
+    }
+    const mesh_metrics_t *mob = mesh_metrics_find(0x33333333);
+    CHECK(mob && mob->nhist == MESH_METRICS_HIST);
+    CHECK(mob && mesh_metrics_point(mob, 0)->mv == 3050);
+    CHECK(mob && mesh_metrics_point(mob, MESH_METRICS_HIST - 1)->mv ==
+                     3000 + (MESH_METRICS_HIST + 4) * 10);
+
+    // Asking the hill for local stats: one packet, want_response, the
+    // variant present and empty; over the air at the hop limit
+    CHECK(mesh_metrics_request(0x11111111, MET_LOCAL));
+    meshtastic_Telemetry req = sent_request();
+    CHECK(req.which_variant == meshtastic_Telemetry_local_stats_tag);
+    CHECK(last_packet.to == 0x11111111 && last_packet.decoded.want_response);
+    CHECK(last_packet.hop_limit == 3 && !last_packet.want_ack && last_packet.channel == 0);
+    CHECK(mesh_metrics_req_state() == MET_REQ_WAITING);
+    uint32_t id = last_packet.id;
+    // Someone else's answer doesn't count
+    meshtastic_Telemetry ls = meshtastic_Telemetry_init_zero;
+    ls.which_variant = meshtastic_Telemetry_local_stats_tag;
+    ls.variant.local_stats.num_packets_tx = 77;
+    ls.variant.local_stats.noise_floor = -104;
+    deliver(fr_telemetry(0x11111111, id + 1, 1700002000, &ls));
+    CHECK(mesh_metrics_req_state() == MET_REQ_WAITING);
+    deliver(fr_telemetry(0x11111111, id, 1700002001, &ls));
+    CHECK(mesh_metrics_req_state() == MET_REQ_DONE);
+    CHECK(e->have[MET_LOCAL] && e->local.num_packets_tx == 77 && e->local.noise_floor == -104);
+
+    // No sensor: the node says so with a routing error
+    CHECK(mesh_metrics_request(0x11111111, MET_POWER));
+    id = sent_request().which_variant == meshtastic_Telemetry_power_metrics_tag ? last_packet.id : 0;
+    CHECK(id != 0);
+    deliver(fr_routing(0x11111111, id, meshtastic_Routing_Error_NO_RESPONSE));
+    CHECK(mesh_metrics_req_state() == MET_REQ_FAILED);
+    CHECK(mesh_metrics_req_error() == meshtastic_Routing_Error_NO_RESPONSE);
+
+    // Silence: given up on after its time
+    CHECK(mesh_metrics_request(0x11111111, MET_ENV));
+    advance(MET_REQ_REMOTE_MS - 100);
+    CHECK(mesh_metrics_req_state() == MET_REQ_WAITING);
+    mesh_metrics_poll();
+    advance(200);
+    mesh_metrics_poll();
+    CHECK(mesh_metrics_req_state() == MET_REQ_FAILED);
+    CHECK(mesh_metrics_req_error() == MET_ERR_NO_ANSWER);
+
+    // Our own node: never on the air
+    CHECK(mesh_metrics_request(ME, MET_DEVICE));
+    req = sent_request();
+    CHECK(last_packet.to == ME && last_packet.hop_limit == 0);
+    CHECK(req.which_variant == meshtastic_Telemetry_device_metrics_tag);
+
+    // The table keeps our node when it's full, and drops the stalest
+    t = device(90, 4.0f, 5);
+    deliver(fr_telemetry(ME, 0, 1600000000, &t));
+    for (int i = 0; i < MESH_METRICS_NODES; i++)
+        deliver(fr_telemetry(0x50000000 + (uint32_t)i, 0, 1700200000 + (uint32_t)i, &t));
+    CHECK(mesh_metrics_count() == MESH_METRICS_NODES);
+    CHECK(mesh_metrics_find(ME) != NULL);
+    CHECK(mesh_metrics_find(0x50000000 + MESH_METRICS_NODES - 1) != NULL);
+    CHECK(mesh_metrics_find(0x11111111) == NULL); // its newest was 1700002001
+
+    // And it all survives a resync with the node
+    mesh_link_request_config();
+    advance(200);
+    uint32_t nonce = node_read();
+    meshtastic_FromRadio fr = fr_my_info(ME, 1);
+    emit(&fr);
+    fr = fr_complete(nonce);
+    emit(&fr);
+    flush_stream();
+    CHECK(mesh_metrics_find(ME) && mesh_metrics_count() == MESH_METRICS_NODES);
+
+    // Not ready: no request
+    mesh_link_set_passive(true);
+    CHECK(!mesh_metrics_request(ME, MET_DEVICE));
+    CHECK(mesh_metrics_req_error() == MET_ERR_NO_LINK);
+    mesh_link_set_passive(false);
+}
+
 int main(void) {
     test_frame_resync();
     test_noise();
@@ -1220,6 +1380,7 @@ int main(void) {
     test_commands();
     test_admin();
     test_remote_admin();
+    test_metrics();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

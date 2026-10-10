@@ -7,6 +7,7 @@
 #include <strings.h>
 
 #include "link.h"
+#include "metrics.h"
 #include "msgs.h"
 #include "nodedb.h"
 
@@ -167,6 +168,32 @@ bool mesh_cmd_run(char *line) {
         show_conv(conv, count ? atoi(count) : MSGS_DEFAULT);
     } else if (strcmp(cmd, "nodes") == 0) {
         mesh_db_dump();
+    } else if (strcmp(cmd, "metrics") == 0 || strcmp(cmd, "telreq") == 0) {
+        bool req = cmd[0] == 't';
+        char *who = word(&rest);
+        uint32_t node = who ? parse_node(who) : mesh_db.my_node_num;
+        if (!node || (req && !who)) {
+            printf(req ? "usage: telreq <node> [device|env|power|local]\n"
+                       : "unknown node '%s'\n", who);
+            return true;
+        }
+        if (!req) {
+            mesh_metrics_dump(node);
+            return true;
+        }
+        char *what = word(&rest);
+        met_kind_t k = MET_DEVICE;
+        if (what && what[0] == 'e')
+            k = MET_ENV;
+        else if (what && what[0] == 'p')
+            k = MET_POWER;
+        else if (what && what[0] == 'l')
+            k = MET_LOCAL;
+        if (mesh_metrics_request(node, k))
+            printf("asked !%08lx for %s; 'metrics %s' shows the answer\n", (unsigned long)node,
+                   mesh_metrics_kind_name(k), who);
+        else
+            printf("not sent: not connected to the node\n");
     } else {
         // Not ours: put back the blank word() cut at, so the caller sees
         // the whole line.
@@ -183,5 +210,8 @@ void mesh_cmd_help(void) {
            "dm <node> <text>       direct message; node is !id or short name\n"
            "msgs [<ch|node> [n]]   list conversations, or show the last n\n"
            "                       messages of one (and mark it read)\n"
-           "nodes                  node and channel tables\n");
+           "nodes                  node and channel tables\n"
+           "metrics [node]         telemetry we have from a node (default: ours)\n"
+           "telreq <node> [what]   ask a node for device, env, power or local\n"
+           "                       stats (transmits unless it's our own node)\n");
 }

@@ -38,6 +38,7 @@ void fb_pixel(int x, int y, uint8_t c);
 uint8_t fb_get(int x, int y);
 void fb_hline(int x, int y, int w, uint8_t c);
 void fb_vline(int x, int y, int h, uint8_t c);
+void fb_line(int x0, int y0, int x1, int y1, uint8_t c); // both ends drawn
 void fb_rect(int x, int y, int w, int h, uint8_t c); // outline
 void fb_fill(int x, int y, int w, int h, uint8_t c);
 
