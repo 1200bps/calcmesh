@@ -102,6 +102,19 @@ static mesh_node_t *alloc_node(void) {
     return victim;
 }
 
+static bool copy_position(mesh_node_t *n, const meshtastic_Position *p) {
+    if (!p->has_latitude_i || !p->has_longitude_i ||
+        (p->latitude_i == 0 && p->longitude_i == 0))
+        return false;
+    n->has_position = true;
+    n->latitude_i = p->latitude_i;
+    n->longitude_i = p->longitude_i;
+    n->altitude = p->has_altitude ? p->altitude : 0;
+    n->position_time = p->time;
+    n->precision_bits = (uint8_t)(p->precision_bits > 32 ? 32 : p->precision_bits);
+    return true;
+}
+
 mesh_node_t *mesh_db_upsert_node(const meshtastic_NodeInfo *ni) {
     mesh_node_t *n = mesh_db_find(ni->num);
     if (!n) {
@@ -128,13 +141,8 @@ mesh_node_t *mesh_db_upsert_node(const meshtastic_NodeInfo *ni) {
         n->battery = ni->device_metrics.battery_level > MESH_BATTERY_POWERED
                          ? MESH_BATTERY_POWERED
                          : (uint8_t)ni->device_metrics.battery_level;
-    if (ni->has_position && ni->position.has_latitude_i &&
-        ni->position.has_longitude_i) {
-        n->has_position = true;
-        n->latitude_i = ni->position.latitude_i;
-        n->longitude_i = ni->position.longitude_i;
-        n->altitude = ni->position.has_altitude ? ni->position.altitude : 0;
-    }
+    if (ni->has_position)
+        copy_position(n, &ni->position);
     if (ni->has_user && ni->num == mesh_db.my_node_num && ni->num) {
         mesh_db.owner = ni->user;
         mesh_db.has_owner = true;
@@ -144,6 +152,27 @@ mesh_node_t *mesh_db_upsert_node(const meshtastic_NodeInfo *ni) {
     n->snr = ni->snr;
     n->last_heard = ni->last_heard;
     return n;
+}
+
+mesh_node_t *mesh_db_set_position(uint32_t num, const meshtastic_Position *pos) {
+    mesh_node_t probe = {0};
+    if (!copy_position(&probe, pos))
+        return NULL;
+    mesh_node_t *n = mesh_db_find(num);
+    if (!n) {
+        meshtastic_NodeInfo ni = meshtastic_NodeInfo_init_zero;
+        ni.num = num;
+        if (!(n = mesh_db_upsert_node(&ni)))
+            return NULL;
+    }
+    copy_position(n, pos);
+    return n;
+}
+
+void mesh_db_heard(uint32_t num, uint32_t rx_time) {
+    mesh_node_t *n = mesh_db_find(num);
+    if (n && rx_time > n->last_heard)
+        n->last_heard = rx_time;
 }
 
 const char *mesh_db_preset_name(uint8_t preset) {

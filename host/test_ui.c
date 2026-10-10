@@ -174,7 +174,9 @@ static void test_flows(void) {
     CHECK(ui_tab() == UI_TAB_CHATS);
     press(KBD_F1 + 3); // empty slot
     CHECK(ui_tab() == UI_TAB_CHATS);
-    press(KBD_TAB); // skips the empty slots
+    press(KBD_TAB);
+    CHECK(ui_tab() == UI_TAB_POSITION);
+    press(KBD_TAB); // skips the empty slot
     CHECK(ui_tab() == UI_TAB_SETTINGS);
     press(KBD_TAB);
     CHECK(ui_tab() == UI_TAB_NODES);
@@ -408,6 +410,50 @@ static void test_settings_tab(void) {
         press(KBD_PGDN);
     press(KBD_ENTER); // key echo
     CHECK(settings_get_bool(SET_KEY_ECHO, false));
+}
+
+static void test_position(void) {
+    ui_init();
+    scene_load();
+    press(KBD_F1 + 2);
+    CHECK(ui_tab() == UI_TAB_POSITION);
+    // Our own node, a hollow square, sits somewhere on the map
+    CHECK(count_shade(0, 15, FB_W, 260, FB_WHITE) > 50);
+
+    // n picks outward from us: ourselves first (Enter does nothing), then
+    // the nearest, Basement Lab, 220 m off; Enter opens a DM with it
+    press('n');
+    press(KBD_ENTER);
+    CHECK(ui_tab() == UI_TAB_POSITION);
+    press('n');
+    press(KBD_ENTER);
+    CHECK(ui_tab() == UI_TAB_CHATS);
+    type("map");
+    press(KBD_ENTER);
+    mesh_conv_t dm = MESH_CONV_DM(scene_node(23));
+    CHECK(last(dm) && strcmp(last(dm)->text, "map") == 0);
+
+    // Zooming and panning far past the ends is harmless; 0 fits again
+    press(KBD_ESC);
+    press(KBD_F1 + 2);
+    for (int i = 0; i < 30; i++)
+        press('+');
+    for (int i = 0; i < 30; i++)
+        press(KBD_RIGHT), press(KBD_UP);
+    for (int i = 0; i < 30; i++)
+        press('-');
+    type("0p");
+    press(KBD_ESC);
+
+    // A position packet for a node the scene left unplaced puts it on
+    meshtastic_Position pos = meshtastic_Position_init_zero;
+    pos.has_latitude_i = pos.has_longitude_i = true;
+    pos.latitude_i = 455300000;
+    pos.longitude_i = -1226700000;
+    CHECK(mesh_db_set_position(scene_node(7), &pos));
+    CHECK(mesh_db_find(scene_node(7))->has_position);
+    pos.latitude_i = pos.longitude_i = 0; // no fix: ignored
+    CHECK(!mesh_db_set_position(scene_node(9), &pos));
     ui_render();
 }
 
@@ -507,6 +553,12 @@ static void test_stress(void) {
         memset(ni.user.long_name, i % 2 ? 'W' : '\xC3', sizeof ni.user.long_name - 1);
         strcpy(ni.user.short_name, "\xF0\x9F\x93\xA1"); // one emoji
         ni.last_heard = SCENE_NOW - (uint32_t)i * 977;
+        // Positions all over the globe, poles and the antimeridian included
+        ni.has_position = true;
+        ni.position.has_latitude_i = ni.position.has_longitude_i = true;
+        ni.position.latitude_i = (int32_t)((i * 7919) % 1800000001) - 900000000;
+        ni.position.longitude_i = i % 5 ? (int32_t)(((int64_t)i * 104729) % 3600000001 - 1800000000)
+                                        : (i % 2 ? 1800000000 : -1800000000);
         mesh_db_upsert_node(&ni);
     }
     for (int i = 0; i < 300; i++) {
@@ -524,6 +576,8 @@ static void test_stress(void) {
     press(KBD_ENTER);
     press(KBD_PGUP);
     press(KBD_END);
+    press(KBD_F1 + 2);
+    type("nnnnp++++--------c0");
 }
 
 int main(void) {
@@ -534,6 +588,7 @@ int main(void) {
     test_flows();
     test_settings_tab();
     test_remote_tab();
+    test_position();
     test_stress();
     if (failures)
         fprintf(stderr, "%d failure(s)\n", failures);

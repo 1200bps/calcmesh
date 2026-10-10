@@ -96,6 +96,15 @@ static int tour(const char *dir) {
     err |= shot(dir, "5-chat-compose");
     key("esc"), key("down"), key("down"), key("down"), key("down"), key("enter");
     err |= shot(dir, "6-chat-dm");
+    key("f3");
+    err |= shot(dir, "19-position");
+    type("nnn");
+    err |= shot(dir, "20-position-selected");
+    type("++");
+    err |= shot(dir, "21-position-zoomed");
+    type("0pppp");
+    err |= shot(dir, "22-position-far");
+    key("esc");
     key("f1");
     // The status line in its other states, on the Nodes tab
     fake_link_state = MESH_LINK_PASSIVE;
@@ -152,6 +161,9 @@ static int tour(const char *dir) {
     mesh_db_clear();
     mesh_edit_load();
     err |= shot(dir, "18-settings-no-node");
+
+    key("f3");
+    err |= shot(dir, "23-position-empty");
 
     // Another node's settings, over the mesh (24 on: Position has 19-23)
     fake_link_state = MESH_LINK_READY;

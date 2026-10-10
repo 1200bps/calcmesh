@@ -39,6 +39,7 @@ add_executable(calcmesh
     src/ui/ui.c
     src/ui/ui_chats.c
     src/ui/ui_nodes.c
+    src/ui/ui_position.c
     src/ui/ui_settings.c
     src/sd/msglog.c
     src/sd/settings.c
