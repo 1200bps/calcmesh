@@ -14,6 +14,7 @@
 #include "pico/stdlib.h"
 #include "tusb.h"
 
+#include "audio/chime.h"
 #include "input/backlight.h"
 #include "input/kbd.h"
 #include "lcd/lcd.h"
@@ -113,6 +114,23 @@ static void run_command(char *line) {
         }
         printf("key echo %s, keyboard %s\n", echo_keys ? "on" : "off",
                kbd_online() ? "online" : "not answering");
+    } else if (strcmp(cmd, "chime") == 0) {
+        static const char *const kinds[CHIME_KINDS] = {"dm", "ch"};
+        static const char *const keys[CHIME_KINDS] = {SET_CHIME_DM, SET_CHIME_CHANNEL};
+        char *onoff = strtok(NULL, " \t");
+        int k = arg && strcmp(arg, "dm") == 0 ? CHIME_DM : arg && strcmp(arg, "ch") == 0 ? CHIME_CHANNEL : -1;
+        if (arg && (k < 0 || (onoff && strcmp(onoff, "on") && strcmp(onoff, "off")))) {
+            printf("usage: chime [dm|ch] [on|off]\n");
+            return;
+        }
+        if (k >= 0 && onoff)
+            settings_set_bool(keys[k], onoff[1] == 'n');
+        else if (k >= 0)
+            chime_play((chime_kind_t)k);
+        chime_task(); // takes up the change
+        for (int i = 0; i < CHIME_KINDS; i++)
+            printf("%s chime %s%s", kinds[i], chime_enabled((chime_kind_t)i) ? "on" : "off",
+                   i + 1 < CHIME_KINDS ? ", " : "\n");
     } else if (strcmp(cmd, "sd") == 0) {
         sd_print_status();
     } else if (strcmp(cmd, "bl") == 0 || strcmp(cmd, "kbl") == 0) {
@@ -147,6 +165,8 @@ static void run_command(char *line) {
                "                       (auto: while a PC is using it)\n"
                "desktop MINUTES        auto mode's idle timeout (6-120)\n"
                "keys [on|off]          also print PicoCalc keypresses here\n"
+               "chime [dm|ch]          play the DM (RR) or channel (C) chime\n"
+               "chime dm|ch on|off     switch one on or off (saved)\n"
                "sd                     SD card and message history state\n"
                "bl [0-255]             screen backlight (steps of 16, 16-240)\n"
                "kbl [0-255]            keyboard backlight (steps of 32, 0 = off)\n"
@@ -243,6 +263,7 @@ int main(void) {
     backlight_init(); // saved levels, from the settings
     lcd_init();
     ui_init();
+    chime_init();
 
     uint32_t overruns = 0;
     for (;;) {
@@ -253,6 +274,7 @@ int main(void) {
         backlight_task();
         sd_task();
         apply_settings();
+        chime_task();
         mesh_edit_poll();
         ui_task();
         screenport_task();

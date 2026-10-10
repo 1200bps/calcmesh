@@ -140,12 +140,45 @@ static void test_text_bounds(void) {
     CHECK(mesh_msgs_add(MESH_CONV_CHANNEL(0), &m) != NULL);
 }
 
+// The receive hook (message chimes): new incoming messages only, once each.
+static int rx_dm, rx_ch;
+static void on_rx(const mesh_msg_t *m) {
+    if (MESH_CONV_IS_DM(mesh_msgs_conv_of(m)))
+        rx_dm++;
+    else
+        rx_ch++;
+}
+
+static void test_rx_hook(void) {
+    mesh_msgs_clear();
+    mesh_msgs_set_rx_hook(on_rx);
+    const mesh_msg_t *a = rx(MESH_CONV_DM(0x42), 0x42, "hi");
+    rx(MESH_CONV_CHANNEL(1), 0x43, "cq");
+    CHECK(rx_dm == 1 && rx_ch == 1);
+    mesh_msg_t dup = *a; // heard again
+    CHECK(mesh_msgs_add(MESH_CONV_DM(0x42), &dup) == NULL && rx_dm == 1);
+    mesh_msg_t m = {0};
+    m.id = 900;
+    m.from = 1;
+    m.to = 0x42;
+    m.status = MESH_MSG_QUEUED; // ours
+    CHECK(mesh_msgs_add(MESH_CONV_DM(0x42), &m) && rx_dm == 1);
+    m.id = 901;
+    m.from = 0x42;
+    m.status = MESH_MSG_RECEIVED;
+    CHECK(mesh_msgs_restore(MESH_CONV_DM(0x42), &m) && rx_dm == 1);
+    mesh_msgs_set_rx_hook(NULL);
+    rx(MESH_CONV_CHANNEL(1), 0x43, "unhooked");
+    CHECK(rx_ch == 1);
+}
+
 int main(void) {
     mesh_db_clear();
     test_pool_eviction();
     test_dm_eviction();
     test_status_and_observer();
     test_text_bounds();
+    test_rx_hook();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

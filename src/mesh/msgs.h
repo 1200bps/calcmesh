@@ -126,6 +126,10 @@ typedef struct {
     void *ctx;
 } mesh_msgs_observer_t;
 
+// Called for each message received off the mesh as it is stored (not for
+// restored ones or duplicates), e.g. to sound a chime. NULL to remove.
+void mesh_msgs_set_rx_hook(void (*fn)(const mesh_msg_t *m));
+
 // Clock for mesh_msg_t.local_ms (the link installs its own).
 void mesh_msgs_set_clock(uint32_t (*now_ms)(void));
 

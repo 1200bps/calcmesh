@@ -37,6 +37,8 @@
 #define SET_DESKTOP_MODE "desktop.mode"         // auto, on or off (meshlink.h)
 #define SET_DESKTOP_IDLE "desktop.idle_min"     // auto mode's idle timeout, 6-120
 #define SET_KEY_ECHO "console.key_echo"         // print keypresses on the console
+#define SET_CHIME_DM "chime.dm"                 // Morse RR for a DM (on unless off)
+#define SET_CHIME_CHANNEL "chime.channel"       // Morse C for a channel message
 
 // NULL if unset.
 const char *settings_get(const char *key);

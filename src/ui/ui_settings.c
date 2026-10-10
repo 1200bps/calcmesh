@@ -60,6 +60,8 @@ typedef enum {
     F_DESKTOP,
     F_IDLE,
     F_ECHO,
+    F_CHIME_DM,
+    F_CHIME_CH,
     // Actions
     A_WRITE,
     A_DISCARD,
@@ -175,6 +177,8 @@ static kind_t kind_of(int f) {
     case F_POWER_SAVE:
     case F_BLUETOOTH:
     case F_ECHO:
+    case F_CHIME_DM:
+    case F_CHIME_CH:
         return K_BOOL;
     case F_HOPS:
     case F_TX_POWER:
@@ -242,6 +246,8 @@ static const char *label_of(int f, int arg) {
     case F_DESKTOP: return "Desktop mode";
     case F_IDLE: return "Desktop timeout";
     case F_ECHO: return "Key echo (USB)";
+    case F_CHIME_DM: return "DM chime (RR)";
+    case F_CHIME_CH: return "Chan. chime (C)";
     default: return "";
     }
 }
@@ -310,6 +316,8 @@ static int get(const mesh_edit_t *e, int f) {
     case F_DESKTOP: return desktop_mode();
     case F_IDLE: return (int)settings_get_int(SET_DESKTOP_IDLE, IDLE_DEFAULT);
     case F_ECHO: return settings_get_bool(SET_KEY_ECHO, false);
+    case F_CHIME_DM: return settings_get_bool(SET_CHIME_DM, true);
+    case F_CHIME_CH: return settings_get_bool(SET_CHIME_CHANNEL, true);
     default: return 0;
     }
 }
@@ -335,6 +343,8 @@ static void set(mesh_edit_t *e, int f, int v) {
     case F_DESKTOP: settings_set(SET_DESKTOP_MODE, desktop_names[v]); return;
     case F_IDLE: settings_set_int(SET_DESKTOP_IDLE, v); return;
     case F_ECHO: settings_set_bool(SET_KEY_ECHO, v); return;
+    case F_CHIME_DM: settings_set_bool(SET_CHIME_DM, v); return;
+    case F_CHIME_CH: settings_set_bool(SET_CHIME_CHANNEL, v); return;
     default: return;
     }
     mesh_edit_ack(); // the last write's result has been seen
@@ -794,6 +804,8 @@ static void build(void) {
     add_field(F_DESKTOP, 0);
     add_field(F_IDLE, 0);
     add_field(F_ECHO, 0);
+    add_field(F_CHIME_DM, 0);
+    add_field(F_CHIME_CH, 0);
     if (sd_state() == SD_READY)
         add(R_NOTE, 0, 0, settings_dirty() ? "Saving to the SD card..." : "Saved on the SD card.");
     else

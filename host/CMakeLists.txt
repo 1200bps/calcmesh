@@ -132,6 +132,13 @@ target_include_directories(test_kbd PRIVATE ${REPO_ROOT}/src)
 target_compile_options(test_kbd PRIVATE ${WARN})
 add_test(NAME kbd COMMAND test_kbd)
 
+# Morse timing for the message chimes (src/audio/chime.c drives the speakers
+# and stays on the Pico).
+add_executable(test_morse test_morse.c ${REPO_ROOT}/src/audio/morse.c)
+target_include_directories(test_morse PRIVATE ${REPO_ROOT}/src)
+target_compile_options(test_morse PRIVATE ${WARN})
+add_test(NAME morse COMMAND test_morse)
+
 # SD card message history, on FatFs over a RAM disk, with the store built
 # small so restore has to choose what comes back.
 
