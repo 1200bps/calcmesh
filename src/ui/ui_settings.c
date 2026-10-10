@@ -258,6 +258,9 @@ static char *text_of(mesh_edit_t *e, int f, int arg, int *size) {
 #define IDLE_MIN 6 // clients heartbeat every 5 minutes
 #define IDLE_MAX 120
 #define IDLE_DEFAULT 10
+// Minutes: fine steps near the default, coarse ones further out
+static const int idle_steps[] = {6, 7, 8, 9, 10, 12, 15, 20, 30, 45, 60, 90, 120};
+#define N_IDLE_STEPS ((int)(sizeof idle_steps / sizeof idle_steps[0]))
 
 static const char *const desktop_names[] = {"auto", "on", "off"}; // meshlink_desktop_t
 
@@ -440,8 +443,7 @@ static bool step(int f, int dir) {
         break;
     case F_DESKTOP: n = (v + dir + 3) % 3; break;
     case F_IDLE:
-        n = v + dir;
-        if (n < IDLE_MIN || n > IDLE_MAX)
+        if (!next_step(idle_steps, N_IDLE_STEPS, v, dir, &n))
             return false;
         break;
     default:

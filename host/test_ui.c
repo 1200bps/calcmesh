@@ -389,6 +389,18 @@ static void test_settings_tab(void) {
     press(KBD_DOWN);
     press(KBD_LEFT);
     CHECK(strcmp(settings_get(SET_DESKTOP_MODE), "off") == 0);
+    press(KBD_DOWN); // timeout: minutes near 10, coarser further out
+    press(KBD_RIGHT);
+    CHECK(settings_get_int(SET_DESKTOP_IDLE, -1) == 12);
+    for (int i = 0; i < 20; i++)
+        press(KBD_RIGHT);
+    CHECK(settings_get_int(SET_DESKTOP_IDLE, -1) == 120);
+    settings_set_int(SET_DESKTOP_IDLE, 25); // from the console: between steps
+    press(KBD_LEFT);
+    CHECK(settings_get_int(SET_DESKTOP_IDLE, -1) == 20);
+    for (int i = 0; i < 20; i++)
+        press(KBD_LEFT);
+    CHECK(settings_get_int(SET_DESKTOP_IDLE, -1) == 6);
     for (int i = 0; i < 40; i++)
         press(KBD_PGDN);
     press(KBD_ENTER); // key echo
