@@ -617,6 +617,60 @@ static void test_receive(void) {
     CHECK(mesh_link_epoch() == 1700000130);
 }
 
+static meshtastic_FromRadio fr_position(uint32_t from, int32_t lat, int32_t lon,
+                                        uint32_t rx_time) {
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_packet_tag;
+    meshtastic_MeshPacket *p = &fr.packet;
+    p->from = from;
+    p->to = MESH_ADDR_BROADCAST;
+    p->id = (uint32_t)lat ^ rx_time;
+    p->has_rx_time = true;
+    p->rx_time = rx_time;
+    p->which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    p->decoded.portnum = meshtastic_PortNum_POSITION_APP;
+    meshtastic_Position pos = meshtastic_Position_init_zero;
+    pos.has_latitude_i = pos.has_longitude_i = true;
+    pos.latitude_i = lat;
+    pos.longitude_i = lon;
+    pos.has_altitude = true;
+    pos.altitude = 1234;
+    pos.time = rx_time - 5;
+    pos.precision_bits = 32;
+    pb_ostream_t os = pb_ostream_from_buffer(p->decoded.payload.bytes,
+                                             sizeof p->decoded.payload.bytes);
+    CHECK(pb_encode(&os, meshtastic_Position_fields, &pos));
+    p->decoded.payload.size = (pb_size_t)os.bytes_written;
+    return fr;
+}
+
+static void test_position(void) {
+    link_up();
+    const mesh_node_t *hill = mesh_db_find(0x11111111);
+    CHECK(hill && hill->has_position && hill->latitude_i == 401234567);
+
+    deliver(fr_position(0x11111111, 473901234, -1224567890, 1700000500));
+    CHECK(hill->has_position && hill->latitude_i == 473901234 &&
+          hill->longitude_i == -1224567890 && hill->altitude == 1234);
+    CHECK(hill->position_time == 1700000495 && hill->precision_bits == 32);
+    CHECK(hill->last_heard == 1700000500);
+
+    // No fix (0,0) keeps the last good one, but still counts as heard.
+    deliver(fr_position(0x11111111, 0, 0, 1700000600));
+    CHECK(hill->latitude_i == 473901234 && hill->last_heard == 1700000600);
+
+    // An older packet doesn't move last_heard back.
+    deliver(fr_text(0x11111111, MESH_ADDR_BROADCAST, 0, 999, "late"));
+    CHECK(hill->last_heard == 1700000600);
+
+    // From a node we've never seen: it's added, with its position.
+    int before = mesh_db.node_count;
+    deliver(fr_position(0x77777777, 473000000, -1220000000, 1700000700));
+    const mesh_node_t *n = mesh_db_find(0x77777777);
+    CHECK(mesh_db.node_count == before + 1);
+    CHECK(n && n->has_position && !n->has_user && strcmp(n->id, "!77777777") == 0);
+}
+
 static void test_send(void) {
     link_up();
     node_read();
@@ -920,6 +974,7 @@ int main(void) {
     test_eviction();
     test_passive();
     test_receive();
+    test_position();
     test_send();
     test_commands();
     test_admin();

@@ -132,8 +132,8 @@ pgdn bs del f1`..`f10`, and `=TEXT` types TEXT. `-s N` scales the PNG
 (default 2).
 
 The tabs run along the bottom of the screen as five softkey slots, one over
-each of F1-F5 (Nodes, Chats, and Settings on F5 so far), after the HP
-48/49/50 menu row.
+each of F1-F5 (Nodes, Chats, Position, and Settings on F5 so far), after
+the HP 48/49/50 menu row.
 
 In the UI: F1-F5 or Tab / Shift-Tab switch tabs; arrows,
 PgUp/PgDn, Home/End move; Enter opens a chat (on a node: a DM with it) or
@@ -148,6 +148,15 @@ lists them and asks for `Y`. They go out as admin messages to our own node in
 one edit transaction; the node saves them and restarts, and calcmesh reads
 everything back and says whether it all took. calcmesh's own settings take
 effect at once and are saved to the SD card.
+
+Position (F3) plots every node that has shared a position as a point on a
+blank, north-up plane around our own node (a hollow square), labelled with
+short names and fading with time since heard; there are no maps. Arrows
+pan, `+`/`-` zoom, `0` or Home fits everyone back in, `n`/`p` (or
+PgDn/PgUp) pick the next node outward from us, showing its distance,
+bearing and last-heard, `c` centres on it, Enter opens a DM with it and Esc
+drops it. Positions come from the node's NodeInfo dump and from
+POSITION_APP packets as they arrive.
 
 On the PicoCalc, the same framebuffer goes out the **screen** USB port
 whenever something has the port open, and `tools/screen.py` (Python 3, no

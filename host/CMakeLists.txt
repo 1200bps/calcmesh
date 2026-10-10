@@ -68,6 +68,7 @@ set(UI_SRCS
     ${REPO_ROOT}/src/ui/ui.c
     ${REPO_ROOT}/src/ui/ui_nodes.c
     ${REPO_ROOT}/src/ui/ui_chats.c
+    ${REPO_ROOT}/src/ui/ui_position.c
     ${REPO_ROOT}/src/ui/ui_settings.c)
 
 # FatFs, for the SD card code; ramdisk.c is its disk
@@ -94,7 +95,7 @@ set_source_files_properties(${REPO_ROOT}/lib/fatfs/ff.c ${REPO_ROOT}/lib/fatfs/f
     PROPERTIES COMPILE_OPTIONS -w)
 target_include_directories(ui_fake PUBLIC
     ${REPO_ROOT}/src ${REPO_ROOT}/src/ui ${REPO_ROOT}/src/mesh fake .)
-target_link_libraries(ui_fake PUBLIC meshtastic_protos)
+target_link_libraries(ui_fake PUBLIC meshtastic_protos m)
 target_include_directories(ui_fake PUBLIC ${REPO_ROOT}/lib/fatfs ${REPO_ROOT}/src/sd)
 target_compile_definitions(ui_fake PUBLIC FF_USE_MKFS=1)
 target_compile_options(ui_fake PRIVATE ${WARN})

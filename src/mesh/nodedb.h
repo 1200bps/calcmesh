@@ -39,6 +39,8 @@ typedef struct {
     int32_t latitude_i;  // 1e-7 degrees
     int32_t longitude_i;
     int32_t altitude; // metres
+    uint32_t position_time; // when the fix was taken, epoch seconds; 0 if not said
+    uint8_t precision_bits; // of lat/lon kept, 32 = full; 0 if not said
 } mesh_node_t;
 
 typedef struct {
@@ -101,6 +103,15 @@ const meshtastic_Config *mesh_db_config(pb_size_t tag);
 const meshtastic_ModuleConfig *mesh_db_module(pb_size_t tag);
 mesh_node_t *mesh_db_upsert_node(const meshtastic_NodeInfo *ni);
 mesh_node_t *mesh_db_find(uint32_t num);
+
+// A POSITION_APP packet from a node: store its fix (adding the node if we
+// didn't know it). A position without coordinates, or at 0,0 (what firmware
+// sends with no fix), changes nothing. Returns the node, or NULL.
+mesh_node_t *mesh_db_set_position(uint32_t num, const meshtastic_Position *pos);
+
+// Any packet from a node, received at rx_time (node's clock): moves its
+// last_heard forward. Unknown nodes are left alone.
+void mesh_db_heard(uint32_t num, uint32_t rx_time);
 
 // Name to show for a channel: its own name, or for an unnamed primary the
 // modem preset name ("LongFast"), as the official clients do.
