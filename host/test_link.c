@@ -797,6 +797,18 @@ static void test_commands(void) {
     node_read();
     CHECK(last_packet.to == 0x33333333);
 
+    // Short names can start with digits
+    deliver(fr_node(0x44444444, "Twelve", "12Tc", 1700000000));
+    strcpy(line, "dm 12tc hi");
+    CHECK(mesh_cmd_run(line));
+    node_read();
+    CHECK(last_packet.to == 0x44444444);
+    strcpy(line, "telreq 12Tc local");
+    CHECK(mesh_cmd_run(line));
+    node_read();
+    CHECK(last_packet.to == 0x44444444 &&
+          last_packet.decoded.portnum == meshtastic_PortNum_TELEMETRY_APP);
+
     packets = 0;
     strcpy(line, "dm nobody hey");
     CHECK(mesh_cmd_run(line));

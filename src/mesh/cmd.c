@@ -34,8 +34,14 @@ static char *word(char **rest) {
     return w;
 }
 
-// "!a1b2c3d4", "0xa1b2c3d4", a decimal node number, or a short name.
+// A short name, "!a1b2c3d4", "0xa1b2c3d4", or a decimal node number. Short
+// names come first: they can start with digits ("12Tc").
 static uint32_t parse_node(const char *s) {
+    for (int i = 0; i < mesh_db.node_count; i++) {
+        const mesh_node_t *n = &mesh_db.nodes[i];
+        if (n->has_user && strcasecmp(n->short_name, s) == 0)
+            return n->num;
+    }
     char *end;
     unsigned long v;
     if (s[0] == '!') {
@@ -49,11 +55,6 @@ static uint32_t parse_node(const char *s) {
     if (isdigit((unsigned char)s[0])) {
         v = strtoul(s, &end, 10);
         return *end ? 0 : (uint32_t)v;
-    }
-    for (int i = 0; i < mesh_db.node_count; i++) {
-        const mesh_node_t *n = &mesh_db.nodes[i];
-        if (n->has_user && strcasecmp(n->short_name, s) == 0)
-            return n->num;
     }
     return 0;
 }
@@ -172,9 +173,12 @@ bool mesh_cmd_run(char *line) {
         bool req = cmd[0] == 't';
         char *who = word(&rest);
         uint32_t node = who ? parse_node(who) : mesh_db.my_node_num;
-        if (!node || (req && !who)) {
-            printf(req ? "usage: telreq <node> [device|env|power|local]\n"
-                       : "unknown node '%s'\n", who);
+        if (req && !who) {
+            printf("usage: telreq <node> [device|env|power|local]\n");
+            return true;
+        }
+        if (!node) {
+            printf("unknown node '%s'\n", who ? who : "(ours: not synced yet)");
             return true;
         }
         if (!req) {
