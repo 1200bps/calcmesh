@@ -20,7 +20,7 @@ static const struct {
     {"Ridge Repeater", "RDG1", 0, 9.25f, 40, 101, true},
     {"Juniper Base", "JUNI", 0, -3.5f, 95, 87, false},
     {"K7 Mobile", "K7MB", 1, 0, 300, 64, false},
-    {"Hilltop Solar", "HTS", 0, -11.75f, 610, 42, false},
+    {"Hilltop Solar", "HTS", 0, -11.75f, 610, 42, true},
     {"Corvid", "CRVD", 2, 0, 1500, 15, false},
     {"Library Roof", "LIB", 1, 0, 2400, 101, true},
     {"Tbeam Trail", "TBT", 3, 0, 4000, 91, false},
@@ -69,7 +69,17 @@ static void add_node(uint32_t num, const char *lname, const char *sname,
         ni.device_metrics.battery_level = (uint32_t)batt;
     }
     ni.is_favorite = fav;
+    // Most have sent their public key; a few old or quiet ones haven't
+    if (ago >= 0 && hops >= 0 && hops < 5) {
+        ni.user.public_key.size = 32;
+        for (int i = 0; i < 32; i++)
+            ni.user.public_key.bytes[i] = (uint8_t)(num >> (i % 4 * 8)) ^ (uint8_t)(i * 37);
+    }
     mesh_db_upsert_node(&ni);
+    if (num == SCENE_ME) {
+        mesh_db.owner = ni.user;
+        mesh_db.has_owner = true;
+    }
 }
 
 static void add_channel(int index, int role, const char *name) {
@@ -99,6 +109,34 @@ const mesh_msg_t *scene_msg(uint32_t from, mesh_conv_t conv, uint32_t time,
     m.hops = 0xFF;
     snprintf(m.text, sizeof m.text, "%s", text);
     return mesh_msgs_add(conv, &m);
+}
+
+// The Ridge Repeater's settings, for the fake remote node to answer with
+static void scene_remote(void) {
+    mesh_edit_t *r = &fake_remote;
+    memset(r, 0, sizeof *r);
+    snprintf(r->owner.long_name, sizeof r->owner.long_name, "Ridge Repeater");
+    snprintf(r->owner.short_name, sizeof r->owner.short_name, "RDG1");
+    r->owner.public_key.size = 32;
+    r->device.role = meshtastic_Config_DeviceConfig_Role_ROUTER;
+    r->device.node_info_broadcast_secs = 10800;
+    r->position.gps_mode = meshtastic_Config_PositionConfig_GpsMode_NOT_PRESENT;
+    r->position.fixed_position = true;
+    r->position.position_broadcast_secs = 43200;
+    r->lora.use_preset = true;
+    r->lora.modem_preset = meshtastic_Config_LoRaConfig_ModemPreset_LONG_FAST;
+    r->lora.region = meshtastic_Config_LoRaConfig_RegionCode_US;
+    r->lora.hop_limit = 4;
+    r->lora.tx_power = 27;
+    r->lora.tx_enabled = true;
+    for (int i = 0; i < 8; i++)
+        r->channels[i].index = i;
+    r->channels[0].role = meshtastic_Channel_Role_PRIMARY;
+    r->channels[0].has_settings = true;
+    r->channels[1].role = meshtastic_Channel_Role_SECONDARY;
+    r->channels[1].has_settings = true;
+    snprintf(r->channels[1].settings.name, sizeof r->channels[1].settings.name, "calcmesh");
+    fake_remote_error = 0;
 }
 
 void scene_load(void) {
@@ -156,7 +194,9 @@ void scene_load(void) {
     add_channel(2, meshtastic_Channel_Role_SECONDARY, "hikers");
 
     add_node(SCENE_ME, "PicoCalc", "PCAL", 0, 0, 0, 101, false);
+    mesh_edit_select(0);
     mesh_edit_load();
+    scene_remote();
     settings_clear();
     settings_set_int(SET_SCREEN_BACKLIGHT, 128);
     settings_set_int(SET_KEYS_BACKLIGHT, 64);

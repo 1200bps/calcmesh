@@ -15,6 +15,7 @@
 #include "fb.h"
 #include "nodedb.h"
 #include "mesh/nodeedit.h"
+#include "meshtastic/mesh.pb.h"
 #include "png.h"
 #include "scene.h"
 #include "ui.h"
@@ -151,6 +152,55 @@ static int tour(const char *dir) {
     mesh_db_clear();
     mesh_edit_load();
     err |= shot(dir, "18-settings-no-node");
+
+    // Another node's settings, over the mesh (24 on: Position has 19-23)
+    fake_link_state = MESH_LINK_READY;
+    fake_node_silent = false;
+    scene_load();
+    key("f1"), key("f5"), key("home"), key("enter");
+    err |= shot(dir, "24-remote-pick");
+    key("down"), key("enter");
+    err |= shot(dir, "25-remote-unfetched");
+    key("enter");
+    for (int i = 0; i < 3; i++)
+        fake_remote_answer(), mesh_edit_poll();
+    err |= shot(dir, "26-remote-fetching");
+    while (fake_remote_answer())
+        mesh_edit_poll();
+    err |= shot(dir, "27-remote-fetched");
+    key("home");
+    for (int i = 0; i < 7; i++)
+        key("down");
+    key("right");
+    for (int i = 0; i < 11; i++)
+        key("down");
+    key("enter");
+    err |= shot(dir, "28-remote-confirm");
+    type("y");
+    for (int i = 0; i < 3; i++)
+        fake_remote_answer(), mesh_edit_poll();
+    err |= shot(dir, "29-remote-writing");
+    for (int i = 0; i < 60 && mesh_edit_state() == MESH_EDIT_RESTARTING; i++) {
+        if (!fake_remote_answer())
+            fake_ms += 1000;
+        mesh_edit_poll();
+    }
+    key("home");
+    err |= shot(dir, "30-remote-done");
+    // One it refuses
+    fake_remote_error = meshtastic_Routing_Error_ADMIN_PUBLIC_KEY_UNAUTHORIZED;
+    for (int i = 0; i < 7; i++)
+        key("down");
+    key("right");
+    for (int i = 0; i < 11; i++)
+        key("down");
+    key("enter");
+    type("y");
+    fake_remote_answer();
+    mesh_edit_poll();
+    key("home");
+    err |= shot(dir, "31-remote-refused");
+    fake_remote_error = 0;
     return err;
 }
 

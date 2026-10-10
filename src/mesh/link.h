@@ -101,6 +101,22 @@ uint32_t mesh_link_epoch(void);
 struct _meshtastic_AdminMessage;
 bool mesh_link_send_admin(const struct _meshtastic_AdminMessage *a);
 
+// The same to another node over the mesh, PKI-encrypted: it acts on it only
+// if our node's public key is one of its admin keys. want_response for get_*
+// requests. *id (if given) gets the packet id, which its answer and any
+// routing error carry as request_id.
+bool mesh_link_send_admin_to(uint32_t to, const struct _meshtastic_AdminMessage *a,
+                             bool want_response, uint32_t *id);
+
+// Admin messages that arrive (answers from other nodes), and routing results
+// (acks and errors) for admin messages we sent. error is a
+// meshtastic_Routing_Error; 0 is an ack. Set once; not reset by init.
+struct _meshtastic_MeshPacket;
+typedef void (*mesh_admin_cb)(const struct _meshtastic_MeshPacket *p,
+                              const struct _meshtastic_AdminMessage *a);
+typedef void (*mesh_admin_routing_cb)(uint32_t request_id, uint32_t from, uint8_t error);
+void mesh_link_on_admin(mesh_admin_cb on_admin, mesh_admin_routing_cb on_routing);
+
 // The millisecond clock the link was given.
 uint32_t mesh_link_ms(void);
 

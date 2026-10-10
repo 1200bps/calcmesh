@@ -11,6 +11,7 @@
 #include "msgs.h"
 #include "nodedb.h"
 #include "nodeedit.h"
+#include "remoteadmin.h"
 #include "meshtastic/admin.pb.h"
 #include "pb_decode.h"
 #include "pb_encode.h"
@@ -912,6 +913,246 @@ static void test_admin(void) {
     CHECK(!mesh_link_send_admin(&a));
 }
 
+// ---- remote admin ----------------------------------------------------------------
+
+static const uint32_t HILL = 0x11111111;
+
+// An admin answer from another node, for request id
+static meshtastic_FromRadio fr_admin(uint32_t from, uint32_t request_id,
+                                     const meshtastic_AdminMessage *a) {
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_packet_tag;
+    meshtastic_MeshPacket *p = &fr.packet;
+    p->from = from;
+    p->to = ME;
+    p->id = request_id ^ 0x3333;
+    p->pki_encrypted = true;
+    p->which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    p->decoded.portnum = meshtastic_PortNum_ADMIN_APP;
+    p->decoded.request_id = request_id;
+    pb_ostream_t os = pb_ostream_from_buffer(p->decoded.payload.bytes,
+                                             sizeof p->decoded.payload.bytes);
+    CHECK(pb_encode(&os, meshtastic_AdminMessage_fields, a));
+    p->decoded.payload.size = (pb_size_t)os.bytes_written;
+    return fr;
+}
+
+// HILL's settings, as it would answer
+static meshtastic_User hill_owner;
+static meshtastic_Config_LoRaConfig hill_lora;
+static uint8_t hill_key = 0x40; // its session key's bytes; changes on restart
+
+// The one admin message the link has sent since the last call; answer it as
+// HILL would. Returns the request (0 if none was sent).
+static pb_size_t hill_answer(void) {
+    n_admin = 0;
+    node_read();
+    CHECK(n_admin <= 1); // one at a time
+    if (!n_admin)
+        return 0;
+    const meshtastic_AdminMessage *q = &admins[0];
+    const meshtastic_MeshPacket *qp = &admin_packets[0];
+    meshtastic_AdminMessage r = meshtastic_AdminMessage_init_zero;
+    r.session_passkey.size = 8;
+    memset(r.session_passkey.bytes, hill_key, 8);
+    switch (q->which_payload_variant) {
+    case meshtastic_AdminMessage_get_device_metadata_request_tag:
+        r.which_payload_variant = meshtastic_AdminMessage_get_device_metadata_response_tag;
+        strcpy(r.get_device_metadata_response.firmware_version, "2.7.15.567b8ea");
+        break;
+    case meshtastic_AdminMessage_get_owner_request_tag:
+        r.which_payload_variant = meshtastic_AdminMessage_get_owner_response_tag;
+        r.get_owner_response = hill_owner;
+        break;
+    case meshtastic_AdminMessage_get_config_request_tag:
+        r.which_payload_variant = meshtastic_AdminMessage_get_config_response_tag;
+        r.get_config_response.which_payload_variant = (pb_size_t)(q->get_config_request + 1);
+        if (r.get_config_response.which_payload_variant == meshtastic_Config_lora_tag)
+            r.get_config_response.payload_variant.lora = hill_lora;
+        break;
+    case meshtastic_AdminMessage_get_channel_request_tag: {
+        r.which_payload_variant = meshtastic_AdminMessage_get_channel_response_tag;
+        int idx = (int)q->get_channel_request - 1;
+        r.get_channel_response.index = idx;
+        r.get_channel_response.role = idx == 0   ? meshtastic_Channel_Role_PRIMARY
+                                      : idx == 1 ? meshtastic_Channel_Role_SECONDARY
+                                                 : meshtastic_Channel_Role_DISABLED;
+        r.get_channel_response.has_settings = true;
+        strcpy(r.get_channel_response.settings.name, idx == 1 ? "Ops" : "");
+        break;
+    }
+    default:
+        // A change: it needs the session key
+        CHECK(q->session_passkey.size == 8 && q->session_passkey.bytes[0] == hill_key);
+        if (q->which_payload_variant == meshtastic_AdminMessage_set_owner_tag)
+            hill_owner = q->set_owner;
+        if (q->which_payload_variant == meshtastic_AdminMessage_set_config_tag &&
+            q->set_config.which_payload_variant == meshtastic_Config_lora_tag)
+            hill_lora = q->set_config.payload_variant.lora;
+        if (q->which_payload_variant == meshtastic_AdminMessage_commit_edit_settings_tag)
+            hill_key++; // it restarts
+        CHECK(!qp->decoded.want_response);
+        // A neighbour's rebroadcast (an implicit ack) first: not enough
+        deliver(fr_routing(0x33333333, qp->id, meshtastic_Routing_Error_NONE));
+        deliver(fr_routing(HILL, qp->id, meshtastic_Routing_Error_NONE));
+        return q->which_payload_variant;
+    }
+    CHECK(qp->decoded.want_response);
+    deliver(fr_admin(HILL, qp->id, &r));
+    return q->which_payload_variant;
+}
+
+static void test_remote_admin(void) {
+    link_up();
+    mesh_edit_select(0);
+    memset(&hill_owner, 0, sizeof hill_owner);
+    strcpy(hill_owner.long_name, "Hilltop Router");
+    strcpy(hill_owner.short_name, "HILL");
+    hill_owner.public_key.size = 32;
+    memset(hill_owner.public_key.bytes, 7, 32);
+    memset(&hill_lora, 0, sizeof hill_lora);
+    hill_lora.use_preset = true;
+    hill_lora.region = meshtastic_Config_LoRaConfig_RegionCode_US;
+    hill_lora.hop_limit = 3;
+    hill_lora.tx_enabled = true;
+
+    // Pointed at HILL: nothing known until fetched, and nothing sent yet
+    node_read();
+    CHECK(mesh_edit_select(HILL));
+    CHECK(mesh_edit_target() == HILL);
+    CHECK(mesh_edit_available() == 0);
+    n_admin = 0;
+    node_read();
+    CHECK(n_admin == 0);
+
+    CHECK(mesh_edit_fetch());
+    CHECK(!mesh_edit_fetch()); // already at it
+    CHECK(ra_state() == RA_BUSY);
+    CHECK(!mesh_edit_select(0)); // not mid-fetch
+    // Each goes out PKI, acked, wanting an answer, at our hop limit (the
+    // default here: link_up sends no LoRa config)
+    int answered = 0;
+    while (hill_answer()) {
+        const meshtastic_MeshPacket *qp = &admin_packets[0];
+        CHECK(qp->to == HILL && qp->from == 0);
+        CHECK(qp->pki_encrypted && qp->want_ack && qp->hop_limit == 3);
+        answered++;
+        mesh_edit_poll();
+    }
+    // metadata, owner, 5 configs, channels 0-2 (2 is disabled: no more)
+    CHECK(answered == 10);
+    CHECK(ra_state() == RA_DONE);
+    CHECK(strcmp(ra.firmware, "2.7.15.567b8ea") == 0);
+    CHECK(mesh_edit_available() == (MESH_EDIT_OWNER | MESH_EDIT_DEVICE | MESH_EDIT_POSITION |
+                                    MESH_EDIT_POWER | MESH_EDIT_LORA | MESH_EDIT_BLUETOOTH |
+                                    MESH_EDIT_CHANNELS));
+    CHECK(strcmp(mesh_edit_base.owner.long_name, "Hilltop Router") == 0);
+    CHECK(mesh_edit_base.lora.hop_limit == 3);
+    CHECK(strcmp(mesh_edit_base.channels[1].settings.name, "Ops") == 0);
+    CHECK(mesh_edit_base.channels[5].role == meshtastic_Channel_Role_DISABLED);
+    CHECK(mesh_edit_dirty() == 0);
+
+    // A write: fresh key, begin, owner, lora, commit; wait; read back
+    strcpy(mesh_edit.owner.long_name, "Hilltop 2");
+    mesh_edit.lora.hop_limit = 4;
+    CHECK(mesh_edit_dirty() == (MESH_EDIT_OWNER | MESH_EDIT_LORA));
+    CHECK(mesh_edit_write());
+    CHECK(mesh_edit_state() == MESH_EDIT_RESTARTING);
+    static const pb_size_t want[] = {
+        meshtastic_AdminMessage_get_owner_request_tag,
+        meshtastic_AdminMessage_begin_edit_settings_tag,
+        meshtastic_AdminMessage_set_owner_tag,
+        meshtastic_AdminMessage_set_config_tag,
+        meshtastic_AdminMessage_commit_edit_settings_tag,
+    };
+    for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {
+        CHECK(hill_answer() == want[i]);
+        mesh_edit_poll();
+    }
+    CHECK(ra_written());
+    CHECK(hill_answer() == 0); // waiting for it to restart
+    advance(RA_RESTART_MS);
+    mesh_edit_poll();
+    CHECK(hill_answer() == meshtastic_AdminMessage_get_owner_request_tag);
+    mesh_edit_poll();
+    CHECK(hill_answer() == meshtastic_AdminMessage_get_config_request_tag);
+    mesh_edit_poll();
+    CHECK(mesh_edit_state() == MESH_EDIT_DONE);
+    CHECK(strcmp(mesh_edit_base.owner.long_name, "Hilltop 2") == 0);
+    CHECK(mesh_edit_base.lora.hop_limit == 4 && mesh_edit_dirty() == 0);
+    CHECK(hill_owner.public_key.size == 32); // written back whole
+    mesh_edit_ack();
+
+    // Refused: our key isn't one of its admin keys. Nothing gets begun, so
+    // nothing needs committing; the edits stay to try again.
+    mesh_edit.lora.hop_limit = 6;
+    CHECK(mesh_edit_write());
+    n_admin = 0;
+    node_read();
+    CHECK(n_admin == 1 && admins[0].which_payload_variant == meshtastic_AdminMessage_get_owner_request_tag);
+    deliver(fr_routing(HILL, admin_packets[0].id, meshtastic_Routing_Error_ADMIN_PUBLIC_KEY_UNAUTHORIZED));
+    mesh_edit_poll();
+    CHECK(mesh_edit_state() == MESH_EDIT_REFUSED);
+    CHECK(mesh_edit_error() == meshtastic_Routing_Error_ADMIN_PUBLIC_KEY_UNAUTHORIZED);
+    CHECK(mesh_edit.lora.hop_limit == 6 && mesh_edit_dirty() == MESH_EDIT_LORA);
+    n_admin = 0;
+    node_read();
+    CHECK(n_admin == 0);
+
+    // Lost partway: the open transaction still gets its commit
+    mesh_edit_ack();
+    CHECK(mesh_edit_write());
+    CHECK(hill_answer() == meshtastic_AdminMessage_get_owner_request_tag);
+    mesh_edit_poll();
+    CHECK(hill_answer() == meshtastic_AdminMessage_begin_edit_settings_tag);
+    mesh_edit_poll();
+    n_admin = 0;
+    node_read();
+    CHECK(n_admin == 1 && admins[0].which_payload_variant == meshtastic_AdminMessage_set_config_tag);
+    // Our node gives up on it
+    deliver(fr_routing(ME, admin_packets[0].id, meshtastic_Routing_Error_MAX_RETRANSMIT));
+    mesh_edit_poll();
+    CHECK(mesh_edit_state() == MESH_EDIT_RESTARTING);
+    CHECK(hill_answer() == meshtastic_AdminMessage_commit_edit_settings_tag);
+    mesh_edit_poll();
+    CHECK(mesh_edit_state() == MESH_EDIT_NO_RESTART);
+    CHECK(mesh_edit_error() == meshtastic_Routing_Error_MAX_RETRANSMIT);
+    CHECK(hill_answer() == 0); // and that's the end of it
+
+    // No answer at all
+    mesh_edit_ack();
+    CHECK(mesh_edit_fetch());
+    node_read();
+    for (int i = 0; i < RA_STEP_MS / 1000 + 1; i++) {
+        advance(1000);
+        mesh_edit_poll();
+    }
+    CHECK(ra_state() == RA_FAILED && ra_error() == RA_ERR_NO_ANSWER);
+    CHECK(mesh_edit_state() == MESH_EDIT_IDLE); // a fetch, not a write
+
+    // An answer from someone else, or to something else, doesn't count
+    CHECK(mesh_edit_fetch());
+    n_admin = 0;
+    node_read();
+    meshtastic_AdminMessage r = meshtastic_AdminMessage_init_zero;
+    r.which_payload_variant = meshtastic_AdminMessage_get_device_metadata_response_tag;
+    deliver(fr_admin(0x33333333, admin_packets[0].id, &r));
+    deliver(fr_admin(HILL, admin_packets[0].id + 1, &r));
+    mesh_edit_poll();
+    CHECK(ra_done() == 0 && ra_state() == RA_BUSY);
+    deliver(fr_admin(HILL, admin_packets[0].id, &r));
+    CHECK(ra_done() == 1);
+
+    // Back to our own node, once it's done
+    for (int i = 0; i < RA_STEP_MS / 1000 + 1; i++) {
+        advance(1000);
+        mesh_edit_poll();
+    }
+    CHECK(mesh_edit_select(0));
+    CHECK(mesh_edit_target() == 0);
+    CHECK(strcmp(mesh_edit_base.owner.long_name, "Calcmesh Base") == 0);
+}
+
 int main(void) {
     test_frame_resync();
     test_noise();
@@ -923,6 +1164,7 @@ int main(void) {
     test_send();
     test_commands();
     test_admin();
+    test_remote_admin();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
