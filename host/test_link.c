@@ -226,6 +226,9 @@ static void test_handshake(void) {
 
     // Leftover console text and a stale completion from an earlier session.
     emit_raw("INFO  | ??:??:?? 3 [Main] Power on\r\n", 37);
+    flush_stream();
+    advance(200);
+    node_read();
     fr = fr_complete(12345);
     emit(&fr);
 
@@ -252,8 +255,10 @@ static void test_handshake(void) {
     flush_stream();
 
     CHECK(mesh_link_state() == MESH_LINK_READY);
+    CHECK(mesh_link_conn() == MESH_CONN_UP);
     CHECK(ready_calls == 1);
     CHECK(mesh_link_stats()->bad_frames == 0);
+    CHECK(mesh_link_stats()->console_lines == 1);
     CHECK(mesh_db.my_node_num == me);
     CHECK(strcmp(mesh_db.pio_env, "heltec-v4") == 0);
     CHECK(strcmp(mesh_db_channel_name(0), "MediumFast") == 0);
@@ -285,6 +290,7 @@ static void test_handshake(void) {
     emit(&fr);
     flush_stream();
     CHECK(mesh_link_state() == MESH_LINK_WAKING);
+    CHECK(mesh_link_conn() == MESH_CONN_SYNCING);
     advance(200);
     uint32_t nonce2 = node_read();
     CHECK(nonce2 != 0 && nonce2 != nonce);
@@ -294,6 +300,63 @@ static void test_handshake(void) {
     advance(5200);
     CHECK(node_read() != 0);
     CHECK(mesh_link_stats()->requests == 3);
+    CHECK(mesh_link_conn() == MESH_CONN_NONE);
+    // and it's back as soon as the node says anything
+    emit_raw("\r\n", 2);
+    flush_stream();
+    CHECK(mesh_link_conn() == MESH_CONN_SYNCING);
+}
+
+// The port opens partway through a frame: its tail arrives as stray bytes,
+// which must not come out as console lines, while real console text (with
+// colour codes and UTF-8) still does.
+static void test_console(void) {
+    mesh_link_io_t io = {.write = fake_write, .now_ms = fake_now};
+    mesh_link_init(&io);
+    mesh_link_on_ready(NULL);
+    CHECK(mesh_link_conn() == MESH_CONN_NONE);
+
+    meshtastic_FromRadio frames[3] = {
+        fr_node(0x11111111, "Hilltop Router", "HILL", 1700000000),
+        fr_channel(1, meshtastic_Channel_Role_SECONDARY, "Ops", 32),
+        fr_my_info(0xa1b2c3d4, 40),
+    };
+    for (int f = 0; f < 3; f++) {
+        emit(&frames[f]);
+        uint8_t whole[sizeof stream];
+        size_t len = stream_len;
+        memcpy(whole, stream, len);
+        stream_len = 0;
+        // Every cut past the header, so the start bytes are gone
+        for (size_t cut = 2; cut < len; cut++) {
+            emit_raw(whole + cut, len - cut);
+            emit(&frames[(f + 1) % 3]);
+            flush_stream();
+        }
+    }
+    CHECK(mesh_link_stats()->console_lines == 0);
+    CHECK(mesh_link_stats()->console_dropped > 0);
+
+    const char text[] = "\x1b[34mINFO \x1b[0m | 12:00:01 [Main] Caf\xc3\xa9 \xe2\x9c\x93\r\n"
+                        "\x1b[33mWARN \x1b[0m | 12:00:02 [Main] ok\r\n";
+    emit_raw(text, sizeof text - 1);
+    flush_stream();
+    CHECK(mesh_link_stats()->console_lines == 1); // the last one waits...
+    advance(100);
+    CHECK(mesh_link_stats()->console_lines == 2); // ...for a quiet moment
+
+    // A line longer than the buffer comes out in pieces, none of them junk.
+    char long_line[400];
+    for (size_t i = 0; i < sizeof long_line - 2; i += 2)
+        long_line[i] = '\xc3', long_line[i + 1] = '\xa9';
+    long_line[sizeof long_line - 2] = '\r';
+    long_line[sizeof long_line - 1] = '\n';
+    uint32_t dropped = mesh_link_stats()->console_dropped;
+    emit_raw(long_line, sizeof long_line);
+    flush_stream();
+    advance(100);
+    CHECK(mesh_link_stats()->console_lines > 4);
+    CHECK(mesh_link_stats()->console_dropped == dropped);
 }
 
 static void test_eviction(void) {
@@ -358,6 +421,7 @@ static void test_passive(void) {
     // The PC takes over mid-handshake.
     mesh_link_set_passive(true);
     CHECK(mesh_link_state() == MESH_LINK_PASSIVE);
+    CHECK(mesh_link_conn() == MESH_CONN_DESKTOP);
 
     // The PC's own dump goes by: tables follow it, its config_complete
     // isn't ours, and a reboot notice doesn't make us talk.
@@ -637,6 +701,14 @@ static void test_commands(void) {
     node_read();
     char line[128];
 
+    // Someone else's command comes back whole, arguments and all.
+    strcpy(line, "bl 64");
+    CHECK(!mesh_cmd_run(line));
+    CHECK(strcmp(line, "bl 64") == 0);
+    strcpy(line, "keys");
+    CHECK(!mesh_cmd_run(line));
+    CHECK(strcmp(line, "keys") == 0);
+
     strcpy(line, "send 1   hello  there ");
     CHECK(mesh_cmd_run(line));
     node_read();
@@ -676,6 +748,7 @@ int main(void) {
     test_frame_resync();
     test_noise();
     test_handshake();
+    test_console();
     test_eviction();
     test_passive();
     test_receive();

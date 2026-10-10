@@ -8,6 +8,7 @@
 // (sd/sd.h) when there is one.
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "pico/stdlib.h"
@@ -77,12 +78,41 @@ static void run_command(char *line) {
                kbd_online() ? "online" : "not answering");
     } else if (strcmp(cmd, "sd") == 0) {
         sd_print_status();
+    } else if (strcmp(cmd, "bl") == 0 || strcmp(cmd, "kbl") == 0) {
+        bool keys = cmd[0] == 'k';
+        if (arg) {
+            char *end;
+            long v = strtol(arg, &end, 0);
+            if (*end || v < 0 || v > 255) {
+                printf("usage: %s [0-255]\n", cmd);
+                return;
+            }
+            if (keys)
+                kbd_set_key_backlight((uint8_t)v);
+            else
+                kbd_set_lcd_backlight((uint8_t)v);
+            printf("%s backlight set to %ld; the keyboard rounds it\n",
+                   keys ? "keyboard" : "screen", v);
+        } else {
+            printf("%s backlight %d\n", keys ? "keyboard" : "screen",
+                   keys ? kbd_key_backlight() : kbd_lcd_backlight());
+        }
+    } else if (strcmp(cmd, "bat") == 0) {
+        bool chg;
+        int pct = kbd_battery(&chg);
+        if (pct < 0)
+            printf("battery not read yet\n");
+        else
+            printf("battery %d%%%s\n", pct, chg ? ", charging" : "");
     } else if (strcmp(cmd, "help") == 0) {
         mesh_cmd_help();
         printf("desktop [on|off|auto]  bridge the node port to the node\n"
                "                       (auto: while a PC is using it)\n"
                "keys [on|off]          also print PicoCalc keypresses here\n"
-               "sd                     SD card and message history state\n");
+               "sd                     SD card and message history state\n"
+               "bl [0-255]             screen backlight (steps of 16, 16-240)\n"
+               "kbl [0-255]            keyboard backlight (steps of 32, 0 = off)\n"
+               "bat                    PicoCalc battery\n");
     } else {
         printf("unknown command '%s', try help\n", cmd);
     }
@@ -148,6 +178,9 @@ static void ui_task(void) {
     // The clock for "heard 5m ago" is the node's (mesh_link_epoch()), which
     // the UI reads by itself; ui_set_now() is for a better source, if one
     // turns up.
+    bool chg;
+    int pct = kbd_battery(&chg);
+    ui_set_battery(pct, chg);
     ui_render();
     fb_flush(show_rows, NULL);
 }

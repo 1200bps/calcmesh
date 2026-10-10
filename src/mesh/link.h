@@ -35,6 +35,8 @@ typedef struct {
     uint32_t requests;   // want_config attempts
     uint32_t texts_rx;   // text messages received
     uint32_t texts_tx;   // text messages sent
+    uint32_t console_lines;   // node console lines printed
+    uint32_t console_dropped; // stray-byte lines dropped as binary junk
 } mesh_link_stats_t;
 
 typedef enum {
@@ -62,6 +64,16 @@ void mesh_link_rx(const uint8_t *data, size_t len);
 void mesh_link_poll(void);
 
 mesh_link_state_t mesh_link_state(void);
+
+// The link as a status line would put it.
+typedef enum {
+    MESH_CONN_NONE,    // no node: the last handshake attempt heard nothing back
+                       // (unplugged, off, or its serial API isn't on this UART)
+    MESH_CONN_SYNCING, // handshake under way
+    MESH_CONN_UP,      // handshake done; sending works
+    MESH_CONN_DESKTOP, // desktop mode has the node; we only listen
+} mesh_link_conn_t;
+mesh_link_conn_t mesh_link_conn(void);
 const mesh_link_stats_t *mesh_link_stats(void);
 
 // Send text (UTF-8, len bytes, need not be NUL-terminated) to a channel or as

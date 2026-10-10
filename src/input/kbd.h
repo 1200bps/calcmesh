@@ -2,7 +2,8 @@
 //
 // The STM32 (ClockworkPi's picocalc_keyboard firmware) scans the matrix,
 // applies Shift and Caps Lock itself and queues key events in a FIFO we poll
-// at register 0x09. It sits on i2c1, GP6 = SDA, GP7 = SCL, address 0x1F
+// at register 0x09. It also runs the screen and keyboard backlights and
+// talks to the power chip, so the battery level comes from it too. It sits on i2c1, GP6 = SDA, GP7 = SCL, address 0x1F
 // (clockwork_Mainboard_V2.0_Schematic.pdf; conf_app.h in the firmware).
 //
 // The STM32 also masters a second bus to the power chip, and ClockworkPi's
@@ -39,6 +40,25 @@ bool kbd_get(kbd_event_t *ev);
 
 // Whether the keyboard answered its last poll.
 bool kbd_online(void);
+
+// Backlights, as PWM duty 0-255. Setting one queues the write; the getters
+// return what the keyboard last reported, or -1 before the first read, and
+// also follow the keyboard's own brightness keys (Alt+, and Alt+. for the
+// screen, Alt+Space for the keys), since the driver re-reads them every few
+// seconds. The keyboard rounds what it's given:
+// - screen: down to a multiple of 16, kept within 16..240, so it never goes
+//   fully dark;
+// - keys: down to a multiple of 32; under 32 or over 240 is off.
+void kbd_set_lcd_backlight(uint8_t level);
+int kbd_lcd_backlight(void);
+void kbd_set_key_backlight(uint8_t level);
+int kbd_key_backlight(void);
+
+// Battery charge in percent, or -1 until the first read. *charging (if not
+// NULL) is set while it's on the charger. The keyboard updates it every
+// 20 s, and reports 0 when there's no battery, so 0 and not charging most
+// likely means running off USB with no cells in.
+int kbd_battery(bool *charging);
 
 // A short name for a key ("a", "Enter", "F3"), for logs.
 const char *kbd_key_name(uint16_t key);

@@ -10,6 +10,8 @@ _Static_assert(UI_TAB_COUNT <= UI_SLOTS, "one softkey per tab");
 
 static ui_tab_t tab;
 static uint32_t now_set;
+static int battery = -1;
+static bool charging;
 
 void ui_init(void) {
     tab = UI_TAB_NODES;
@@ -20,6 +22,11 @@ void ui_init(void) {
 ui_tab_t ui_tab(void) { return tab; }
 void ui_switch_tab(int t) { tab = (ui_tab_t)((t + UI_TAB_COUNT) % UI_TAB_COUNT); }
 void ui_set_now(uint32_t epoch) { now_set = epoch; }
+
+void ui_set_battery(int percent, bool chg) {
+    battery = percent > 100 ? 100 : percent;
+    charging = percent >= 0 && chg;
+}
 
 uint32_t ui_now(void) {
     if (now_set)
@@ -162,37 +169,90 @@ static void draw_tabs(void) {
     }
 }
 
-static void draw_status(void) {
-    static const char *const states[] = {
-        [MESH_LINK_IDLE] = "idle",
-        [MESH_LINK_WAKING] = "waking node",
-        [MESH_LINK_CONFIGURING] = "loading",
-        [MESH_LINK_READY] = "ready",
-        [MESH_LINK_PASSIVE] = "desktop mode",
+// Battery: "64%" and a cell outline filled to match, "+" while charging.
+// Returns the x where it starts. With no cells in, the keyboard reports 0.
+static int draw_battery(int right, int y) {
+    if (battery < 0)
+        return right;
+    if (battery == 0 && !charging) {
+        fb_text(right - 3 * UI_CW, y, "usb", 3, UI_FONT, FB_GREY, FB_CLEAR);
+        return right - 3 * UI_CW;
+    }
+
+    // Body 15x8 with a 2x4 nub, centred on the text's x-height
+    int bw = 15, bh = 8, bx = right - bw - 2, by = y + 3;
+    fb_rect(bx, by, bw, bh, FB_WHITE);
+    fb_fill(bx + bw, by + 2, 2, bh - 4, FB_WHITE);
+    int fill = (battery * (bw - 4) + 50) / 100;
+    if (battery > 0 && fill < 1)
+        fill = 1;
+    fb_fill(bx + 2, by + 2, fill, bh - 4, charging ? FB_GREY : FB_WHITE);
+
+    char txt[8];
+    snprintf(txt, sizeof txt, "%s%d%%", charging ? "+" : "", battery);
+    int n = utf8_cells(txt), x = bx - 2 - n * UI_CW;
+    bool low = battery <= 15 && !charging;
+    if (low)
+        fb_fill(x - 1, y, n * UI_CW + 2, UI_LH, FB_WHITE);
+    fb_text(x, y, txt, n, UI_FONT, low ? FB_BLACK : FB_WHITE, FB_CLEAR);
+    return low ? x - 1 : x;
+}
+
+// Link to the node: a square (solid when connected, hollow while syncing,
+// crossed with no node) and a word; desktop mode is an inverted tag, since
+// the PC has the node and nothing can be sent from here.
+static int draw_link(int right, int y) {
+    mesh_link_conn_t c = mesh_link_conn();
+    if (c == MESH_CONN_DESKTOP) {
+        const char *s = "DESKTOP";
+        int w = utf8_cells(s) * UI_CW + 4, x = right - w;
+        fb_fill(x, y, w, UI_LH, FB_WHITE);
+        fb_text(x + 2, y, s, -1, UI_FONT, FB_BLACK, FB_CLEAR);
+        return x;
+    }
+
+    static const char *const words[] = {
+        [MESH_CONN_NONE] = "no node",
+        [MESH_CONN_SYNCING] = "syncing",
+        [MESH_CONN_UP] = "connected",
     };
+    const char *s = (unsigned)c < sizeof words / sizeof words[0] ? words[c] : "?";
+    uint8_t fg = c == MESH_CONN_UP ? FB_GREY : FB_WHITE;
+    int n = utf8_cells(s), x = right - n * UI_CW;
+    fb_text(x, y, s, n, UI_FONT, fg, FB_CLEAR);
+
+    int sq = 7, sx = x - 3 - sq, sy = y + 3;
+    if (c == MESH_CONN_UP) {
+        fb_fill(sx, sy, sq, sq, fg);
+    } else {
+        fb_rect(sx, sy, sq, sq, fg);
+        if (c == MESH_CONN_NONE)
+            for (int i = 0; i < sq; i++) {
+                fb_pixel(sx + i, sy + i, fg);
+                fb_pixel(sx + sq - 1 - i, sy + i, fg);
+            }
+    }
+    return sx;
+}
+
+// Status line: our node and primary channel on the left; link and the
+// PicoCalc's battery on the right.
+static void draw_status(void) {
     int y = 1;
+
+    int x = draw_battery(FB_W - 1, y);
+    if (x < FB_W - 1)
+        x -= 2 * UI_CW;
+    x = draw_link(x, y);
 
     char left[64];
     uint32_t me = mesh_db.my_node_num;
-    mesh_link_state_t st = mesh_link_state();
     if (me)
         snprintf(left, sizeof left, "%s  %s", ui_node_short(me),
                  mesh_db_channel_name(0));
     else
-        snprintf(left, sizeof left, "no node");
-    ui_cells(0, y, 30, left, FB_WHITE, FB_CLEAR);
-
-    const char *s = st < sizeof states / sizeof states[0] ? states[st] : "?";
-    const mesh_node_t *mine = me ? mesh_db_find(me) : NULL;
-    char right[32];
-    if (mine && mine->battery == MESH_BATTERY_POWERED)
-        snprintf(right, sizeof right, "%s  pwr", s);
-    else if (mine && mine->battery != MESH_BATTERY_UNKNOWN)
-        snprintf(right, sizeof right, "%s  %u%%", s, mine->battery);
-    else
-        snprintf(right, sizeof right, "%s", s);
-    ui_cells_right(UI_COLS - 22, y, 22, right,
-                   st == MESH_LINK_READY ? FB_GREY : FB_WHITE, FB_CLEAR);
+        snprintf(left, sizeof left, "calcmesh");
+    ui_cells(0, y, x / UI_CW - 1, left, FB_WHITE, FB_CLEAR);
 
     fb_hline(0, UI_STATUS_RULE, FB_W, FB_DIM);
 }
