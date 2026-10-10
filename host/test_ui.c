@@ -408,6 +408,12 @@ static void test_settings_tab(void) {
     CHECK(settings_get_int(SET_DESKTOP_IDLE, -1) == 6);
     for (int i = 0; i < 40; i++)
         press(KBD_PGDN);
+    press(KBD_ENTER); // channel chime, the last row
+    CHECK(!settings_get_bool(SET_CHIME_CHANNEL, true));
+    press(KBD_UP);
+    press(KBD_ENTER); // DM chime
+    CHECK(!settings_get_bool(SET_CHIME_DM, true));
+    press(KBD_UP);
     press(KBD_ENTER); // key echo
     CHECK(settings_get_bool(SET_KEY_ECHO, false));
 }

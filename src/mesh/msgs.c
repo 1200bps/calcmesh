@@ -30,6 +30,7 @@ static uint32_t next_seq = 1;
 static uint32_t version;
 static uint32_t (*clock_ms)(void);
 static const mesh_msgs_observer_t *observer;
+static void (*rx_hook)(const mesh_msg_t *m);
 
 _Static_assert(MESH_MSG_POOL <= 255, "order[] holds uint8_t slot indices");
 _Static_assert(CONV_SLOTS <= 255, "pool_conv[] holds uint8_t conv indices");
@@ -43,6 +44,7 @@ void mesh_msgs_clear(void) {
 
 void mesh_msgs_set_clock(uint32_t (*now_ms)(void)) { clock_ms = now_ms; }
 void mesh_msgs_set_observer(const mesh_msgs_observer_t *obs) { observer = obs; }
+void mesh_msgs_set_rx_hook(void (*fn)(const mesh_msg_t *m)) { rx_hook = fn; }
 uint32_t mesh_msgs_version(void) { return version; }
 
 static int conv_find(mesh_conv_t c) {
@@ -207,6 +209,8 @@ static mesh_msg_t *add(mesh_conv_t conv, const mesh_msg_t *m, bool restored) {
 
     if (!restored && observer && observer->added)
         observer->added(dst, observer->ctx);
+    if (!restored && rx_hook && dst->status == MESH_MSG_RECEIVED)
+        rx_hook(dst);
     return dst;
 }
 
