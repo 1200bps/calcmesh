@@ -19,9 +19,6 @@
 #include "sd/sd.h"
 
 #define INIT_HZ 400000
-#ifndef SD_SPI_HZ
-#define SD_SPI_HZ 12500000
-#endif
 
 #define CMD0 0    // GO_IDLE_STATE
 #define CMD1 1    // SEND_OP_COND (MMC)
@@ -44,6 +41,10 @@
 
 static volatile DSTATUS stat = STA_NOINIT;
 static uint8_t card_type;
+// Data clock after init. Halved each time a mount fails after the card has
+// initialised (reads failing at speed: a marginal contact), down to 1 MHz;
+// back to full speed once a mount works.
+static uint32_t spi_hz = SD_SPI_HZ;
 
 static uint8_t xchg(uint8_t b) {
     uint8_t r;
@@ -143,6 +144,15 @@ void sd_card_pins_init(void) {
 
 void sd_card_eject(void) { stat = STA_NOINIT; }
 
+void sd_card_mounted(bool ok) {
+    if (ok)
+        spi_hz = SD_SPI_HZ;
+    else if (!(stat & STA_NOINIT) && spi_hz > 1000000)
+        spi_hz /= 2; // it answered at 400 kHz, then reads failed
+}
+
+uint32_t sd_card_hz(void) { return spi_hz; }
+
 const char *sd_card_type(void) {
     if (stat & STA_NOINIT)
         return "none";
@@ -155,12 +165,19 @@ DSTATUS disk_initialize(BYTE pdrv) {
     if (pdrv)
         return STA_NOINIT;
     spi_set_baudrate(SD_SPI, INIT_HZ);
-    gpio_put(SD_CS_PIN, 1);
-    for (int i = 0; i < 10; i++) // 80+ clocks with CS high: into SPI mode
-        xchg(0xFF);
+    // A card left mid-transfer (the Pico rebooted under it) may still be
+    // sending a block or be busy, and miss the first CMD0: clock it out and
+    // try a few times.
+    uint8_t r = 0xFF;
+    for (int tries = 0; tries < 8 && r != 1; tries++) {
+        gpio_put(SD_CS_PIN, 1);
+        for (int i = 0; i < 10; i++) // 80+ clocks with CS high: into SPI mode
+            xchg(0xFF);
+        r = send_cmd(CMD0, 0);
+    }
 
     uint8_t ty = 0, ocr[4];
-    if (send_cmd(CMD0, 0) == 1) {
+    if (r == 1) {
         absolute_time_t until = make_timeout_time_ms(1000);
         if (send_cmd(CMD8, 0x1AA) == 1) {
             spi_read_blocking(SD_SPI, 0xFF, ocr, 4);
@@ -190,7 +207,7 @@ DSTATUS disk_initialize(BYTE pdrv) {
     card_type = ty;
     card_deselect();
     if (ty) {
-        spi_set_baudrate(SD_SPI, SD_SPI_HZ);
+        spi_set_baudrate(SD_SPI, spi_hz);
         stat = 0;
     } else {
         stat = STA_NOINIT;

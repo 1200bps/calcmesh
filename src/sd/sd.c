@@ -57,6 +57,9 @@ static bool mount(bool restore) {
         int n = msglog_open(restore);
         if (n >= 0) {
             printf("[sd] %s card, %s", sd_card_type(), fs_name());
+            if (sd_card_hz() < SD_SPI_HZ)
+                printf(", at %lu kHz", (unsigned long)(sd_card_hz() / 1000));
+            sd_card_mounted(true);
             if (restore)
                 printf(", %d messages restored", n);
             printf("\n");
@@ -68,6 +71,8 @@ static bool mount(bool restore) {
         printf("[sd] card won't mount (FatFs error %d%s)\n", r,
                r == FR_NO_FILESYSTEM ? ": not FAT or exFAT" : "");
     }
+    if (r == FR_DISK_ERR)
+        sd_card_mounted(false); // answered, then reads failed: try slower
     unmount();
     error_reported = true;
     state = SD_ERROR;
