@@ -34,6 +34,11 @@ chip only hears GP0 (what the Pico sends), not the node's replies.
 
 ## Building
 
+Prebuilt UF2s for the Pico and Pico 2 are on the
+[releases page](https://github.com/1200bps/calcmesh/releases); `version` on
+the console, the Settings tab, or `picotool info` says which one is flashed.
+To build your own:
+
 Needs the [pico-sdk](https://github.com/raspberrypi/pico-sdk) (2.x, with
 its `lib/tinyusb` submodule), an `arm-none-eabi` GCC, CMake, Ninja, and
 Python 3 with the nanopb generator's dependencies:

@@ -160,6 +160,8 @@ static void run_command(char *line) {
             printf("battery not read yet\n");
         else
             printf("battery %d%%%s\n", pct, chg ? ", charging" : "");
+    } else if (strcmp(cmd, "version") == 0) {
+        printf("calcmesh %s\n", CALCMESH_VERSION);
     } else if (strcmp(cmd, "help") == 0) {
         mesh_cmd_help();
         printf("desktop [on|off|auto]  bridge the node port to the node\n"
@@ -173,7 +175,8 @@ static void run_command(char *line) {
                "kbl [0-255]            keyboard backlight (steps of 32, 0 = off)\n"
                "                       (desktop, keys, bl and kbl are saved, as\n"
                "                       on the Settings tab)\n"
-               "bat                    PicoCalc battery\n");
+               "bat                    PicoCalc battery\n"
+               "version                calcmesh's version\n");
     } else {
         printf("unknown command '%s', try help\n", cmd);
     }

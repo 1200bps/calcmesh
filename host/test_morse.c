@@ -9,7 +9,7 @@ static int failures;
 static void check(const char *text, int wpm, const uint16_t *want, int nwant) {
     uint16_t got[64];
     int n = morse_timing(text, wpm, got, 64);
-    if (n != nwant || memcmp(got, want, sizeof *got * (size_t)n)) {
+    if (n != nwant || (n && memcmp(got, want, sizeof *got * (size_t)n))) {
         fprintf(stderr, "morse \"%s\" at %d wpm: got", text, wpm);
         for (int i = 0; i < n; i++)
             fprintf(stderr, " %u", got[i]);
