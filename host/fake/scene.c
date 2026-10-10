@@ -3,8 +3,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "mesh/nodeedit.h"
 #include "msgs.h"
 #include "nodedb.h"
+#include "sd/settings.h"
 #include "ui.h"
 
 static const struct {
@@ -108,10 +110,45 @@ void scene_load(void) {
     meshtastic_MyNodeInfo mi = meshtastic_MyNodeInfo_init_zero;
     mi.my_node_num = SCENE_ME;
     mesh_db_set_my_info(&mi);
+    meshtastic_DeviceMetadata md = meshtastic_DeviceMetadata_init_zero;
+    snprintf(md.firmware_version, sizeof md.firmware_version, "2.7.11.ee68575");
+    mesh_db_set_metadata(&md);
+
+    // The node's settings, as a Heltec v4 would send them
     meshtastic_Config cfg = meshtastic_Config_init_zero;
+    cfg.which_payload_variant = meshtastic_Config_device_tag;
+    cfg.payload_variant.device.role = meshtastic_Config_DeviceConfig_Role_CLIENT;
+    mesh_db_set_config(&cfg);
+    cfg = (meshtastic_Config)meshtastic_Config_init_zero;
+    cfg.which_payload_variant = meshtastic_Config_position_tag;
+    cfg.payload_variant.position.gps_mode = meshtastic_Config_PositionConfig_GpsMode_NOT_PRESENT;
+    cfg.payload_variant.position.position_broadcast_secs = 900;
+    cfg.payload_variant.position.position_broadcast_smart_enabled = true;
+    mesh_db_set_config(&cfg);
+    cfg = (meshtastic_Config)meshtastic_Config_init_zero;
+    cfg.which_payload_variant = meshtastic_Config_power_tag;
+    mesh_db_set_config(&cfg);
+    cfg = (meshtastic_Config)meshtastic_Config_init_zero;
     cfg.which_payload_variant = meshtastic_Config_lora_tag;
     cfg.payload_variant.lora.use_preset = true;
     cfg.payload_variant.lora.modem_preset = meshtastic_Config_LoRaConfig_ModemPreset_LONG_FAST;
+    cfg.payload_variant.lora.region = meshtastic_Config_LoRaConfig_RegionCode_US;
+    cfg.payload_variant.lora.hop_limit = 3;
+    cfg.payload_variant.lora.tx_enabled = true;
+    mesh_db_set_config(&cfg);
+    meshtastic_ModuleConfig mc = meshtastic_ModuleConfig_init_zero;
+    mc.which_payload_variant = meshtastic_ModuleConfig_mqtt_tag;
+    mesh_db_set_module_config(&mc);
+    mc.which_payload_variant = meshtastic_ModuleConfig_range_test_tag;
+    mc.payload_variant.range_test.enabled = true;
+    mesh_db_set_module_config(&mc);
+    mc = (meshtastic_ModuleConfig)meshtastic_ModuleConfig_init_zero;
+    mc.which_payload_variant = meshtastic_ModuleConfig_neighbor_info_tag;
+    mc.payload_variant.neighbor_info.enabled = true;
+    mesh_db_set_module_config(&mc);
+    cfg = (meshtastic_Config)meshtastic_Config_init_zero;
+    cfg.which_payload_variant = meshtastic_Config_bluetooth_tag;
+    cfg.payload_variant.bluetooth.enabled = true;
     mesh_db_set_config(&cfg);
 
     add_channel(0, meshtastic_Channel_Role_PRIMARY, "");
@@ -119,6 +156,10 @@ void scene_load(void) {
     add_channel(2, meshtastic_Channel_Role_SECONDARY, "hikers");
 
     add_node(SCENE_ME, "PicoCalc", "PCAL", 0, 0, 0, 101, false);
+    mesh_edit_load();
+    settings_clear();
+    settings_set_int(SET_SCREEN_BACKLIGHT, 128);
+    settings_set_int(SET_KEYS_BACKLIGHT, 64);
     for (int i = 0; i < NNODES; i++)
         add_node(scene_node(i), nodes[i].lname, nodes[i].sname, nodes[i].hops,
                  nodes[i].snr, nodes[i].ago, nodes[i].batt, nodes[i].fav);

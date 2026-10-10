@@ -9,6 +9,7 @@
 #include "pb_decode.h"
 #include "pb_encode.h"
 
+#include "meshtastic/admin.pb.h"
 #include "meshtastic/mesh.pb.h"
 
 // The Python client sends this many START2 bytes and waits before its first
@@ -40,6 +41,10 @@ static uint32_t last_tx_ms;
 static bool node_silent;
 static bool db_cleared;
 static uint32_t packet_id;
+// Admin packets we sent lately, to match routing errors to (a ring)
+#define ADMIN_IDS 8
+static uint32_t admin_ids[ADMIN_IDS];
+static unsigned admin_next;
 // Node clock anchor: epoch seconds seen at our clock's anchor_ms.
 static uint32_t anchor_epoch;
 static uint32_t anchor_ms;
@@ -128,6 +133,7 @@ void mesh_link_init(const mesh_link_io_t *io_) {
     nonce = io.seed ^ now();
     packet_id = io.seed * 2654435761u ^ now();
     anchor_epoch = 0;
+    memset(admin_ids, 0, sizeof admin_ids);
     mesh_msgs_set_clock(msgs_clock);
     last_rx_ms = last_tx_ms = now();
     mesh_db_clear();
@@ -340,15 +346,33 @@ static void handle_text(const meshtastic_MeshPacket *p) {
     }
 }
 
+static bool is_admin_id(uint32_t id) {
+    for (int i = 0; i < ADMIN_IDS; i++)
+        if (id && admin_ids[i] == id)
+            return true;
+    return false;
+}
+
 static void handle_routing(const meshtastic_MeshPacket *p) {
-    mesh_msg_t *m = mesh_msgs_find_outgoing(p->decoded.request_id);
-    if (!m)
+    uint32_t req = p->decoded.request_id;
+    mesh_msg_t *m = mesh_msgs_find_outgoing(req);
+    bool admin = !m && is_admin_id(req);
+    if (!m && !admin)
         return;
     meshtastic_Routing r = meshtastic_Routing_init_zero;
     pb_istream_t is = pb_istream_from_buffer(p->decoded.payload.bytes, p->decoded.payload.size);
     if (!pb_decode(&is, meshtastic_Routing_fields, &r) ||
         r.which_variant != meshtastic_Routing_error_reason_tag)
         return;
+    if (admin) {
+        if (r.error_reason != meshtastic_Routing_Error_NONE) {
+            stats.admin_errors++;
+            stats.admin_last_error = (uint8_t)r.error_reason;
+            printf("[link] node refused admin packet %08lx: routing error %d\n",
+                   (unsigned long)req, r.error_reason);
+        }
+        return;
+    }
     if (r.error_reason != meshtastic_Routing_Error_NONE)
         set_status(m, MESH_MSG_FAILED, (uint8_t)r.error_reason);
     else if (m->to != MESH_ADDR_BROADCAST && p->from == m->to)
@@ -409,6 +433,10 @@ static void handle_from_radio(const meshtastic_FromRadio *fr) {
         begin_dump();
         mesh_db_set_config(&fr->config);
         break;
+    case meshtastic_FromRadio_moduleConfig_tag:
+        begin_dump();
+        mesh_db_set_module_config(&fr->moduleConfig);
+        break;
     case meshtastic_FromRadio_config_complete_id_tag:
         if (state != MESH_LINK_CONFIGURING || fr->config_complete_id != nonce) {
             printf("[link] ignoring stale config_complete %lu\n",
@@ -418,6 +446,7 @@ static void handle_from_radio(const meshtastic_FromRadio *fr) {
         printf("[link] config complete: %u nodes, %lu frames\n",
                mesh_db.node_count, (unsigned long)stats.frames);
         set_state(MESH_LINK_READY);
+        stats.syncs++;
         if (on_ready)
             on_ready();
         break;
@@ -450,7 +479,7 @@ static void handle_from_radio(const meshtastic_FromRadio *fr) {
         printf("[node notice] %s\n", fr->clientNotification.message);
         break;
     default:
-        // moduleConfig, queueStatus, fileInfo, deviceuiConfig, region_presets
+        // fileInfo, deviceuiConfig, region_presets
         // and friends: not needed yet.
         break;
     }
@@ -614,6 +643,35 @@ mesh_send_result_t mesh_link_send_text(mesh_conv_t conv, const char *text,
     if (out)
         *out = stored;
     return MESH_SEND_OK;
+}
+
+uint32_t mesh_link_ms(void) { return now(); }
+
+bool mesh_link_send_admin(const meshtastic_AdminMessage *a) {
+    if (state != MESH_LINK_READY || !mesh_db.my_node_num)
+        return false;
+    memset(&to_radio, 0, sizeof to_radio);
+    to_radio.which_payload_variant = meshtastic_ToRadio_packet_tag;
+    meshtastic_MeshPacket *p = &to_radio.packet;
+    // from stays 0: that's what tells the node it came from its own client
+    p->to = mesh_db.my_node_num;
+    p->channel = 0;
+    p->id = next_packet_id();
+    p->hop_limit = 0;
+    p->which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    p->decoded.portnum = meshtastic_PortNum_ADMIN_APP;
+    pb_ostream_t os = pb_ostream_from_buffer(p->decoded.payload.bytes,
+                                             sizeof p->decoded.payload.bytes);
+    if (!pb_encode(&os, meshtastic_AdminMessage_fields, a)) {
+        printf("[link] AdminMessage encode failed: %s\n", PB_GET_ERROR(&os));
+        return false;
+    }
+    p->decoded.payload.size = (pb_size_t)os.bytes_written;
+    if (!send_to_radio())
+        return false;
+    admin_ids[admin_next++ % ADMIN_IDS] = p->id;
+    stats.admin_tx++;
+    return true;
 }
 
 const char *mesh_link_send_result_name(mesh_send_result_t r) {

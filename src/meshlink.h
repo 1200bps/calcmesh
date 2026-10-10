@@ -36,6 +36,9 @@ void meshlink_task(void);
 
 void meshlink_set_desktop(meshlink_desktop_t mode);
 meshlink_desktop_t meshlink_desktop(void);
+// Auto mode ends a session after this long without a byte from the PC
+// (default 10). Clients heartbeat every 5 minutes, so keep it above that.
+void meshlink_set_desktop_idle_min(unsigned minutes);
 // Whether the bridge is active right now.
 bool meshlink_bridged(void);
 

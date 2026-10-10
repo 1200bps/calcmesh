@@ -20,7 +20,8 @@ set(MESH_SRCS
     ${REPO_ROOT}/src/mesh/link.c
     ${REPO_ROOT}/src/mesh/msgs.c
     ${REPO_ROOT}/src/mesh/cmd.c
-    ${REPO_ROOT}/src/mesh/nodedb.c)
+    ${REPO_ROOT}/src/mesh/nodedb.c
+    ${REPO_ROOT}/src/mesh/nodeedit.c)
 
 add_library(meshlink STATIC ${MESH_SRCS})
 target_include_directories(meshlink PUBLIC ${REPO_ROOT}/src/mesh)
@@ -66,20 +67,36 @@ set(UI_SRCS
     ${REPO_ROOT}/src/ui/font_8x16.c
     ${REPO_ROOT}/src/ui/ui.c
     ${REPO_ROOT}/src/ui/ui_nodes.c
-    ${REPO_ROOT}/src/ui/ui_chats.c)
+    ${REPO_ROOT}/src/ui/ui_chats.c
+    ${REPO_ROOT}/src/ui/ui_settings.c)
 
-# The real message store, but link.c stays out: fake_link.c stands in for
-# its state, sending and clock.
+# FatFs, for the SD card code; ramdisk.c is its disk
+add_library(fatfs_host STATIC ${REPO_ROOT}/lib/fatfs/ff.c ${REPO_ROOT}/lib/fatfs/ffunicode.c)
+target_include_directories(fatfs_host PUBLIC ${REPO_ROOT}/lib/fatfs ${REPO_ROOT}/src/sd)
+target_compile_definitions(fatfs_host PUBLIC FF_USE_MKFS=1)
+
+# The real message store, node editing and settings table, but link.c stays
+# out: fake_link.c stands in for its state, sending and clock, and fake_sd.c
+# for the card's state.
 add_library(ui_fake STATIC ${UI_SRCS}
     ${REPO_ROOT}/src/mesh/frame.c
     ${REPO_ROOT}/src/mesh/msgs.c
     ${REPO_ROOT}/src/mesh/nodedb.c
+    ${REPO_ROOT}/src/mesh/nodeedit.c
+    ${REPO_ROOT}/src/sd/settings.c
     fake/fake_link.c
+    fake/fake_sd.c
     fake/scene.c
-    png.c)
+    png.c
+    # settings.c needs FatFs; one archive, so the linker finds the disk
+    ramdisk.c ${REPO_ROOT}/lib/fatfs/ff.c ${REPO_ROOT}/lib/fatfs/ffunicode.c)
+set_source_files_properties(${REPO_ROOT}/lib/fatfs/ff.c ${REPO_ROOT}/lib/fatfs/ffunicode.c
+    PROPERTIES COMPILE_OPTIONS -w)
 target_include_directories(ui_fake PUBLIC
     ${REPO_ROOT}/src ${REPO_ROOT}/src/ui ${REPO_ROOT}/src/mesh fake .)
 target_link_libraries(ui_fake PUBLIC meshtastic_protos)
+target_include_directories(ui_fake PUBLIC ${REPO_ROOT}/lib/fatfs ${REPO_ROOT}/src/sd)
+target_compile_definitions(ui_fake PUBLIC FF_USE_MKFS=1)
 target_compile_options(ui_fake PRIVATE ${WARN})
 
 add_executable(uishot uishot.c)
@@ -114,9 +131,6 @@ add_test(NAME kbd COMMAND test_kbd)
 
 # SD card message history, on FatFs over a RAM disk, with the store built
 # small so restore has to choose what comes back.
-add_library(fatfs_host STATIC ${REPO_ROOT}/lib/fatfs/ff.c ${REPO_ROOT}/lib/fatfs/ffunicode.c)
-target_include_directories(fatfs_host PUBLIC ${REPO_ROOT}/lib/fatfs ${REPO_ROOT}/src/sd)
-target_compile_definitions(fatfs_host PUBLIC FF_USE_MKFS=1)
 
 add_executable(test_msglog test_msglog.c ramdisk.c
     ${REPO_ROOT}/src/sd/msglog.c ${REPO_ROOT}/src/mesh/msgs.c ${REPO_ROOT}/src/mesh/nodedb.c)

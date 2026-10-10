@@ -18,9 +18,11 @@
 #include "input/kbd.h"
 #include "lcd/lcd.h"
 #include "mesh/cmd.h"
+#include "mesh/nodeedit.h"
 #include "meshlink.h"
 #include "screenport.h"
 #include "sd/sd.h"
+#include "sd/settings.h"
 #include "ui/fb.h"
 #include "ui/ui.h"
 
@@ -30,13 +32,39 @@ static const char *const desktop_names[] = {
     [MESHLINK_DESKTOP_OFF] = "off",
 };
 
+#define IDLE_DEFAULT 10
+#define IDLE_MIN 6 // clients heartbeat every 5 minutes
+#define IDLE_MAX 120
+
 static void print_desktop(void) {
-    printf("desktop mode %s (%s)\n", desktop_names[meshlink_desktop()],
+    printf("desktop mode %s (%s)", desktop_names[meshlink_desktop()],
            meshlink_bridged() ? "bridged" : "not bridged");
+    if (meshlink_desktop() == MESHLINK_DESKTOP_AUTO)
+        printf(", ends after %ld min idle",
+               (long)settings_get_int(SET_DESKTOP_IDLE, IDLE_DEFAULT));
+    printf("\n");
 }
 
-// Also print keypresses on the console (they go to the UI either way).
-static bool echo_keys;
+// Settings (sd/settings.h) that main.c puts into effect; backlight.c does
+// the backlights. Also run when the table is loaded from a card.
+static bool echo_keys; // also print keypresses on the console
+
+static void apply_settings(void) {
+    static uint32_t seen = (uint32_t)-1;
+    if (settings_version() == seen)
+        return;
+    seen = settings_version();
+    const char *m = settings_get(SET_DESKTOP_MODE);
+    meshlink_desktop_t mode = MESHLINK_DESKTOP_AUTO;
+    for (size_t i = 0; m && i < count_of(desktop_names); i++)
+        if (strcmp(m, desktop_names[i]) == 0)
+            mode = (meshlink_desktop_t)i;
+    if (mode != meshlink_desktop())
+        meshlink_set_desktop(mode);
+    int32_t idle = settings_get_int(SET_DESKTOP_IDLE, IDLE_DEFAULT);
+    meshlink_set_desktop_idle_min(idle < IDLE_MIN ? IDLE_MIN : idle > IDLE_MAX ? IDLE_MAX : (unsigned)idle);
+    echo_keys = settings_get_bool(SET_KEY_ECHO, false);
+}
 
 static void print_key(const kbd_event_t *ev) {
     printf("[kbd] %s%s%s%s%s\n", ev->mods & KBD_MOD_CTRL ? "Ctrl+" : "",
@@ -54,23 +82,31 @@ static void run_command(char *line) {
         return;
 
     if (strcmp(cmd, "desktop") == 0) {
-        if (arg) {
+        char *end;
+        long min = arg ? strtol(arg, &end, 10) : 0;
+        if (arg && end != arg && !*end) {
+            if (min < IDLE_MIN || min > IDLE_MAX) {
+                printf("idle timeout is %d-%d min\n", IDLE_MIN, IDLE_MAX);
+                return;
+            }
+            settings_set_int(SET_DESKTOP_IDLE, (int32_t)min); // saved, too
+            apply_settings();
+        } else if (arg) {
             size_t i;
             for (i = 0; i < count_of(desktop_names); i++)
                 if (strcmp(arg, desktop_names[i]) == 0)
                     break;
             if (i == count_of(desktop_names)) {
-                printf("usage: desktop [on|off|auto]\n");
+                printf("usage: desktop [on|off|auto|MINUTES]\n");
                 return;
             }
-            meshlink_set_desktop((meshlink_desktop_t)i);
+            settings_set(SET_DESKTOP_MODE, desktop_names[i]); // saved, too
+            apply_settings();
         }
         print_desktop();
     } else if (strcmp(cmd, "keys") == 0) {
-        if (arg && strcmp(arg, "on") == 0)
-            echo_keys = true;
-        else if (arg && strcmp(arg, "off") == 0)
-            echo_keys = false;
+        if (arg && (strcmp(arg, "on") == 0 || strcmp(arg, "off") == 0))
+            settings_set_bool(SET_KEY_ECHO, arg[1] == 'n'), apply_settings();
         else if (arg) {
             printf("usage: keys [on|off]\n");
             return;
@@ -109,10 +145,13 @@ static void run_command(char *line) {
         mesh_cmd_help();
         printf("desktop [on|off|auto]  bridge the node port to the node\n"
                "                       (auto: while a PC is using it)\n"
+               "desktop MINUTES        auto mode's idle timeout (6-120)\n"
                "keys [on|off]          also print PicoCalc keypresses here\n"
                "sd                     SD card and message history state\n"
                "bl [0-255]             screen backlight (steps of 16, 16-240)\n"
                "kbl [0-255]            keyboard backlight (steps of 32, 0 = off)\n"
+               "                       (desktop, keys, bl and kbl are saved, as\n"
+               "                       on the Settings tab)\n"
                "bat                    PicoCalc battery\n");
     } else {
         printf("unknown command '%s', try help\n", cmd);
@@ -213,6 +252,8 @@ int main(void) {
         kbd_task();
         backlight_task();
         sd_task();
+        apply_settings();
+        mesh_edit_poll();
         ui_task();
         screenport_task();
         if (meshlink_rx_overruns() != overruns) {

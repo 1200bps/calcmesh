@@ -10,6 +10,8 @@
 #include "link.h"
 #include "msgs.h"
 #include "nodedb.h"
+#include "nodeedit.h"
+#include "meshtastic/admin.pb.h"
 #include "pb_decode.h"
 #include "pb_encode.h"
 
@@ -45,6 +47,11 @@ static uint32_t fake_now(void *ctx) {
 // MeshPacket sent.
 static int heartbeats, wake_bytes, packets;
 static meshtastic_MeshPacket last_packet;
+// Admin messages the link sent, decoded
+#define MAX_ADMIN 16
+static meshtastic_AdminMessage admins[MAX_ADMIN];
+static meshtastic_MeshPacket admin_packets[MAX_ADMIN];
+static int n_admin;
 static uint32_t node_read(void) {
     frame_rx_t rx;
     frame_rx_init(&rx);
@@ -65,6 +72,14 @@ static uint32_t node_read(void) {
         if (m.which_payload_variant == meshtastic_ToRadio_packet_tag) {
             packets++;
             last_packet = m.packet;
+            if (m.packet.decoded.portnum == meshtastic_PortNum_ADMIN_APP && n_admin < MAX_ADMIN) {
+                meshtastic_AdminMessage a = meshtastic_AdminMessage_init_zero;
+                pb_istream_t as = pb_istream_from_buffer(m.packet.decoded.payload.bytes,
+                                                         m.packet.decoded.payload.size);
+                CHECK(pb_decode(&as, meshtastic_AdminMessage_fields, &a));
+                admin_packets[n_admin] = m.packet;
+                admins[n_admin++] = a;
+            }
         }
     }
     tx_len = 0;
@@ -744,6 +759,159 @@ static void test_commands(void) {
     CHECK(!mesh_cmd_run(line));
 }
 
+// ---- node settings ---------------------------------------------------------------
+
+// The rest of a config dump: sections, a module, and our own User in full
+static void dump_settings(uint32_t region, uint32_t hops, const char *lname) {
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_config_tag;
+    fr.config.which_payload_variant = meshtastic_Config_lora_tag;
+    meshtastic_Config_LoRaConfig *l = &fr.config.payload_variant.lora;
+    l->use_preset = true;
+    l->region = (meshtastic_Config_LoRaConfig_RegionCode)region;
+    l->hop_limit = hops;
+    l->tx_enabled = true;
+    l->ignore_incoming_count = 1; // not shown in the UI: must survive a write
+    l->ignore_incoming[0] = 0xdeadbeef;
+    emit(&fr);
+    fr = (meshtastic_FromRadio)meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_config_tag;
+    fr.config.which_payload_variant = meshtastic_Config_device_tag;
+    fr.config.payload_variant.device.role = meshtastic_Config_DeviceConfig_Role_CLIENT;
+    emit(&fr);
+    fr = (meshtastic_FromRadio)meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_moduleConfig_tag;
+    fr.moduleConfig.which_payload_variant = meshtastic_ModuleConfig_mqtt_tag;
+    fr.moduleConfig.payload_variant.mqtt.enabled = true;
+    emit(&fr);
+    fr = fr_node(ME, lname, "CALC", 1700000000);
+    fr.node_info.user.is_licensed = true;
+    emit(&fr);
+}
+
+static void resync(uint32_t region, uint32_t hops, const char *lname) {
+    advance(200);
+    uint32_t nonce = node_read();
+    CHECK(nonce);
+    meshtastic_FromRadio fr = fr_my_info(ME, 3);
+    emit(&fr);
+    dump_settings(region, hops, lname);
+    fr = fr_channel(0, meshtastic_Channel_Role_PRIMARY, "", 1);
+    emit(&fr);
+    fr = fr_complete(nonce);
+    emit(&fr);
+    flush_stream();
+    CHECK(mesh_link_state() == MESH_LINK_READY);
+}
+
+static void test_admin(void) {
+    link_up();
+    // Settings arrive in a second dump (link_up's has none)
+    mesh_link_request_config();
+    resync(meshtastic_Config_LoRaConfig_RegionCode_US, 3, "Calcmesh Base");
+    CHECK(mesh_db.has_owner && strcmp(mesh_db.owner.long_name, "Calcmesh Base") == 0);
+    CHECK(mesh_db_config(meshtastic_Config_lora_tag));
+    CHECK(!mesh_db_config(meshtastic_Config_power_tag));
+    const meshtastic_ModuleConfig *mq = mesh_db_module(meshtastic_ModuleConfig_mqtt_tag);
+    CHECK(mq && mq->payload_variant.mqtt.enabled);
+
+    mesh_edit_poll(); // takes the fresh settings
+    CHECK(mesh_edit_available() == (MESH_EDIT_OWNER | MESH_EDIT_DEVICE | MESH_EDIT_LORA |
+                                    MESH_EDIT_CHANNEL(0)));
+    CHECK(mesh_edit_dirty() == 0);
+    CHECK(!mesh_edit_write()); // nothing to write
+    // Power never came: edits there don't count
+    mesh_edit.power.is_power_saving = true;
+    CHECK(mesh_edit_dirty() == 0);
+
+    mesh_edit.lora.hop_limit = 5;
+    strcpy(mesh_edit.owner.long_name, "Calc 12Tc");
+    CHECK(mesh_edit_dirty() == (MESH_EDIT_OWNER | MESH_EDIT_LORA));
+    node_read();
+    n_admin = 0;
+    CHECK(mesh_edit_write());
+    node_read();
+    CHECK(n_admin == 4);
+    CHECK(admins[0].which_payload_variant == meshtastic_AdminMessage_begin_edit_settings_tag);
+    CHECK(admins[1].which_payload_variant == meshtastic_AdminMessage_set_owner_tag);
+    CHECK(strcmp(admins[1].set_owner.long_name, "Calc 12Tc") == 0);
+    CHECK(strcmp(admins[1].set_owner.short_name, "CALC") == 0);
+    CHECK(admins[1].set_owner.is_licensed); // kept as the node had it
+    CHECK(admins[2].which_payload_variant == meshtastic_AdminMessage_set_config_tag);
+    CHECK(admins[2].set_config.which_payload_variant == meshtastic_Config_lora_tag);
+    CHECK(admins[2].set_config.payload_variant.lora.hop_limit == 5);
+    CHECK(admins[2].set_config.payload_variant.lora.region ==
+          meshtastic_Config_LoRaConfig_RegionCode_US);
+    CHECK(admins[2].set_config.payload_variant.lora.ignore_incoming_count == 1);
+    CHECK(admins[3].which_payload_variant == meshtastic_AdminMessage_commit_edit_settings_tag);
+    for (int i = 0; i < n_admin; i++) {
+        // From our client (0) to our node, on the admin port
+        CHECK(admin_packets[i].from == 0 && admin_packets[i].to == ME);
+        CHECK(admin_packets[i].decoded.portnum == meshtastic_PortNum_ADMIN_APP);
+    }
+    CHECK(mesh_edit_state() == MESH_EDIT_RESTARTING);
+
+    // It restarts and says so; the link resyncs, and the settings read back
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_rebooted_tag;
+    fr.rebooted = true;
+    deliver(fr);
+    mesh_edit_poll();
+    CHECK(mesh_edit_state() == MESH_EDIT_RESTARTING);
+    resync(meshtastic_Config_LoRaConfig_RegionCode_US, 5, "Calc 12Tc");
+    mesh_edit_poll();
+    CHECK(mesh_edit_state() == MESH_EDIT_DONE);
+    CHECK(mesh_edit_base.lora.hop_limit == 5 && mesh_edit_dirty() == 0);
+    mesh_edit_ack();
+    CHECK(mesh_edit_state() == MESH_EDIT_IDLE);
+
+    // One that doesn't stick, from a node that restarts without saying so:
+    // after a while we ask for the config ourselves
+    mesh_edit.lora.region = meshtastic_Config_LoRaConfig_RegionCode_EU_868;
+    CHECK(mesh_edit_write());
+    advance(MESH_EDIT_RESYNC_MS - 1000);
+    mesh_edit_poll();
+    CHECK(mesh_edit_state() == MESH_EDIT_RESTARTING);
+    advance(1000);
+    mesh_edit_poll();
+    mesh_link_poll();
+    resync(meshtastic_Config_LoRaConfig_RegionCode_US, 5, "Calc 12Tc");
+    mesh_edit_poll();
+    CHECK(mesh_edit_state() == MESH_EDIT_MISMATCH);
+    CHECK(mesh_edit_mismatch() == MESH_EDIT_LORA);
+    CHECK(mesh_edit.lora.region == meshtastic_Config_LoRaConfig_RegionCode_US);
+
+    // Refused: a routing error for one of the admin packets
+    mesh_edit.lora.hop_limit = 2;
+    node_read();
+    n_admin = 0;
+    CHECK(mesh_edit_write());
+    node_read();
+    deliver(fr_routing(ME, admin_packets[1].id, meshtastic_Routing_Error_NOT_AUTHORIZED));
+    mesh_edit_poll();
+    CHECK(mesh_edit_state() == MESH_EDIT_REFUSED);
+    CHECK(mesh_link_stats()->admin_last_error == meshtastic_Routing_Error_NOT_AUTHORIZED);
+
+    // A node that never comes back
+    mesh_edit.lora.hop_limit = 2;
+    CHECK(mesh_edit_write());
+    for (int i = 0; i < MESH_EDIT_TIMEOUT_MS / 1000 + 1; i++) {
+        advance(1000);
+        mesh_link_poll();
+        mesh_edit_poll();
+        node_read();
+    }
+    CHECK(mesh_edit_state() == MESH_EDIT_NO_RESTART);
+
+    // Not while desktop mode has the node
+    mesh_edit_ack();
+    mesh_link_set_passive(true);
+    mesh_edit.lora.hop_limit = 2;
+    CHECK(!mesh_edit_write());
+    meshtastic_AdminMessage a = meshtastic_AdminMessage_init_zero;
+    CHECK(!mesh_link_send_admin(&a));
+}
+
 int main(void) {
     test_frame_resync();
     test_noise();
@@ -754,6 +922,7 @@ int main(void) {
     test_receive();
     test_send();
     test_commands();
+    test_admin();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

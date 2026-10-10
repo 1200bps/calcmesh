@@ -14,6 +14,7 @@
 #include "msgs.h"
 #include "fb.h"
 #include "nodedb.h"
+#include "mesh/nodeedit.h"
 #include "png.h"
 #include "scene.h"
 #include "ui.h"
@@ -112,6 +113,44 @@ static int tour(const char *dir) {
     mesh_msgs_clear();
     key("f1");
     err |= shot(dir, "10-no-node");
+
+    // Settings
+    scene_load();
+    key("f5");
+    err |= shot(dir, "11-settings");
+    for (int i = 0; i < 4; i++)
+        key("down");
+    key("right"), key("right");
+    key("down"), key("down"), key("right");
+    key("home"), key("enter");
+    for (int i = 0; i < 8; i++)
+        key("bs");
+    type("Calc 12T");
+    err |= shot(dir, "12-settings-edit");
+    type("c");
+    key("enter");
+    for (int i = 0; i < 18; i++)
+        key("down");
+    err |= shot(dir, "13-settings-changed");
+    key("enter");
+    err |= shot(dir, "14-settings-confirm");
+    type("y");
+    err |= shot(dir, "15-settings-writing");
+    for (int i = 0; i < 40; i++)
+        key("pgdn");
+    err |= shot(dir, "16-settings-calcmesh");
+    // The node comes back with only some of it
+    key("home");
+    strcpy(mesh_db.owner.long_name, "Calc 12Tc");
+    fake_link_stats.syncs++;
+    mesh_edit_poll();
+    err |= shot(dir, "17-settings-result");
+    mesh_edit_ack();
+    fake_link_state = MESH_LINK_WAKING;
+    fake_node_silent = true;
+    mesh_db_clear();
+    mesh_edit_load();
+    err |= shot(dir, "18-settings-no-node");
     return err;
 }
 

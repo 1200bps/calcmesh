@@ -6,7 +6,16 @@
 #include "link.h"
 #include "ui_internal.h"
 
-_Static_assert(UI_TAB_COUNT <= UI_SLOTS, "one softkey per tab");
+// The views, by softkey slot; NULL is an empty slot.
+static const struct {
+    const char *name;
+    void (*draw)(void);
+    bool (*key)(const kbd_event_t *ev);
+} views[UI_SLOTS] = {
+    [UI_TAB_NODES] = {"Nodes", ui_nodes_draw, ui_nodes_key},
+    [UI_TAB_CHATS] = {"Chats", ui_chats_draw, ui_chats_key},
+    [UI_TAB_SETTINGS] = {"Settings", ui_settings_draw, ui_settings_key},
+};
 
 static ui_tab_t tab;
 static uint32_t now_set;
@@ -20,7 +29,19 @@ void ui_init(void) {
 }
 
 ui_tab_t ui_tab(void) { return tab; }
-void ui_switch_tab(int t) { tab = (ui_tab_t)((t + UI_TAB_COUNT) % UI_TAB_COUNT); }
+void ui_switch_tab(int t) {
+    if (t >= 0 && t < UI_SLOTS && views[t].draw)
+        tab = (ui_tab_t)t;
+}
+
+// The next tab that exists, going dir (+1 or -1) from the current one
+static void step_tab(int dir) {
+    int t = tab;
+    do
+        t = (t + dir + UI_SLOTS) % UI_SLOTS;
+    while (!views[t].draw);
+    tab = (ui_tab_t)t;
+}
 void ui_set_now(uint32_t epoch) { now_set = epoch; }
 
 void ui_set_battery(int percent, bool chg) {
@@ -135,19 +156,22 @@ bool ui_list_key(ui_list_t *l, int count, int rows, uint16_t key) {
 // Softkey row: five equal slots, labels in boxes with clipped corners, the
 // current tab inverted. Unused slots stay empty.
 static void draw_tabs(void) {
-    static const char *const names[UI_TAB_COUNT] = {"Nodes", "Chats"};
     int y = UI_KEYS_Y;
 
-    for (int t = 0; t < UI_TAB_COUNT; t++) {
+    for (int t = 0; t < UI_SLOTS; t++) {
+        const char *name = views[t].name;
+        if (!name)
+            continue;
         char label[16];
         if (t == UI_TAB_NODES)
-            snprintf(label, sizeof label, "%s %u", names[t],
-                     (unsigned)mesh_db.node_count);
+            snprintf(label, sizeof label, "%s %u", name, (unsigned)mesh_db.node_count);
         else if (t == UI_TAB_CHATS && ui_chats_unread())
-            snprintf(label, sizeof label, "%s %d", names[t],
+            snprintf(label, sizeof label, "%s %d", name,
                      ui_chats_unread() > 99 ? 99 : ui_chats_unread());
+        else if (t == UI_TAB_SETTINGS && ui_settings_pending())
+            snprintf(label, sizeof label, "%s *", name);
         else
-            snprintf(label, sizeof label, "%s", names[t]);
+            snprintf(label, sizeof label, "%s", name);
 
         int x = t * UI_SLOT_W + 1, w = UI_SLOT_W - 2, h = UI_KEYS_H;
         bool cur = t == (int)tab;
@@ -263,10 +287,7 @@ void ui_render(void) {
     // Body first: showing a conversation marks it read, which the tab's
     // unread count should already reflect
     fb_clip(0, UI_BODY_Y, FB_W, UI_BODY_H);
-    if (tab == UI_TAB_NODES)
-        ui_nodes_draw();
-    else
-        ui_chats_draw();
+    views[tab].draw();
     fb_unclip();
     draw_tabs();
     draw_status();
@@ -275,17 +296,18 @@ void ui_render(void) {
 void ui_key(const kbd_event_t *ev) {
     // Global: switch tabs. Tab and F1-F5 never mean anything to a view; an
     // F-key over an empty slot does nothing.
+    // A view that's taking text (or asking a question) gets Tab first.
+    if (views[tab].key == ui_settings_key && ui_settings_modal()) {
+        views[tab].key(ev);
+        return;
+    }
     if (ev->key == KBD_TAB) {
-        ui_switch_tab(tab + ((ev->mods & KBD_MOD_SHIFT) ? -1 : 1));
+        step_tab((ev->mods & KBD_MOD_SHIFT) ? -1 : 1);
         return;
     }
     if (ev->key >= KBD_F1 && ev->key < KBD_F1 + UI_SLOTS) {
-        if (ev->key < KBD_F1 + UI_TAB_COUNT)
-            ui_switch_tab(ev->key - KBD_F1);
+        ui_switch_tab(ev->key - KBD_F1);
         return;
     }
-    if (tab == UI_TAB_NODES)
-        ui_nodes_key(ev);
-    else
-        ui_chats_key(ev);
+    views[tab].key(ev);
 }

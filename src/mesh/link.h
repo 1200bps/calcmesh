@@ -33,10 +33,14 @@ typedef struct {
     uint32_t frames;     // FromRadio frames decoded
     uint32_t bad_frames; // frames that failed to decode
     uint32_t requests;   // want_config attempts
+    uint32_t syncs;      // handshakes completed
     uint32_t texts_rx;   // text messages received
     uint32_t texts_tx;   // text messages sent
     uint32_t console_lines;   // node console lines printed
     uint32_t console_dropped; // stray-byte lines dropped as binary junk
+    uint32_t admin_tx;        // admin messages sent
+    uint32_t admin_errors;    // routing errors the node returned for them
+    uint8_t admin_last_error; // meshtastic_Routing_Error of the latest
 } mesh_link_stats_t;
 
 typedef enum {
@@ -89,6 +93,16 @@ const char *mesh_link_send_result_name(mesh_send_result_t r);
 // The node's clock (epoch seconds), extrapolated from the newest received
 // packet that carried one; 0 until then.
 uint32_t mesh_link_epoch(void);
+
+// Send an admin message (settings, owner, channels: admin.proto) to our own
+// node. Messages from the serial client need no session key. False if the
+// link isn't ready or it wouldn't encode. Errors the node sends back are
+// counted in the stats.
+struct _meshtastic_AdminMessage;
+bool mesh_link_send_admin(const struct _meshtastic_AdminMessage *a);
+
+// The millisecond clock the link was given.
+uint32_t mesh_link_ms(void);
 
 // Called once each time a handshake completes. Defaults to mesh_db_dump().
 void mesh_link_on_ready(void (*cb)(void));
