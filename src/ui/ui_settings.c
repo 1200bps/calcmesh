@@ -24,6 +24,11 @@
 #include "ui.h"
 #include "ui_internal.h"
 
+// The firmware build sets this from project() in CMakeLists.txt
+#ifndef CALCMESH_VERSION
+#define CALCMESH_VERSION "dev"
+#endif
+
 #define C_LABEL 2
 #define W_LABEL 16
 #define C_VALUE 19
@@ -798,7 +803,7 @@ static void build(void) {
     else
         build_ours();
 
-    add(R_HEAD, 0, 0, "calcmesh");
+    add(R_HEAD, 0, 0, "calcmesh " CALCMESH_VERSION);
     add_field(F_LCD, 0);
     add_field(F_KBD, 0);
     add_field(F_DESKTOP, 0);
