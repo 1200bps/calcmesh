@@ -9,7 +9,7 @@ endif()
 # Must come before project()
 include(pico_sdk_import.cmake)
 
-project(calcmesh VERSION 0.1.0 LANGUAGES C CXX ASM)
+project(calcmesh VERSION 0.1.1 LANGUAGES C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
