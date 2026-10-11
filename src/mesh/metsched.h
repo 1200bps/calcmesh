@@ -3,11 +3,14 @@
 //
 // Each schedule names a node, which kinds to ask for and how often, no
 // oftener than every METSCHED_MIN_MIN minutes. A run asks for its kinds one
-// at a time, METSCHED_GAP_MS apart; one that gets no answer within
-// METSCHED_WAIT_MS is asked once more, then counted as failed until the next
-// run. A request the user makes by hand meanwhile goes first; the run carries
-// on after it. Runs wait while the link is down; after boot the first comes
-// METSCHED_FIRST_MS after the link is up, a new schedule's at once.
+// at a time, a minute (METSCHED_GAP_MS) after the last one was answered or
+// given up on: LongFast is slow, and an answer from several hops away can
+// take a while. One that gets no answer within METSCHED_WAIT_MS is asked
+// once more METSCHED_RETRY_MS later (the other kinds go meanwhile), then
+// counted as failed until the next run. A request the user makes by hand
+// meanwhile goes first; the run carries on after it. Runs wait while the
+// link is down; after boot the first comes METSCHED_FIRST_MS after the link
+// is up, a new schedule's at once.
 //
 // Kept in the settings (settings.h) as metrics.sched1..4:
 //
@@ -30,8 +33,9 @@
 #define METSCHED_MAX 4
 #define METSCHED_MIN_MIN 30
 #define METSCHED_MAX_MIN 1440
-#define METSCHED_WAIT_MS 60000   // for another node's answer (ours: MET_REQ_LOCAL_MS)
-#define METSCHED_GAP_MS 5000     // between one request and the next
+#define METSCHED_WAIT_MS 90000   // for another node's answer (ours: MET_REQ_LOCAL_MS)
+#define METSCHED_GAP_MS 60000    // between one request's end and the next
+#define METSCHED_RETRY_MS 300000 // after no answer, before asking once more
 #define METSCHED_FIRST_MS 120000 // after the link first comes up
 
 #define MET_BIT(k) (1u << (k))

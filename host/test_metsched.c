@@ -128,12 +128,15 @@ static void test_run(void) {
     run_for(1500); // the gap starts when the answer is seen
     CHECK(fake_tel_sent == sent + 2 && sent_kind() == MET_LOCAL);
 
-    // Nothing comes back: once more after a minute, then given up
+    // Nothing comes back: asked once more five minutes later, then given up
     run_for(METSCHED_WAIT_MS);
-    CHECK(metsched_running(NODE, &k, &t) && t == 2);
-    run_for(METSCHED_GAP_MS);
+    CHECK(metsched_running(NODE, &k, &t) && k == MET_KINDS);
+    run_for(METSCHED_RETRY_MS - 1000);
+    CHECK(fake_tel_sent == sent + 2);
+    run_for(1500);
     CHECK(fake_tel_sent == sent + 3 && sent_kind() == MET_LOCAL);
-    run_for(METSCHED_WAIT_MS + METSCHED_GAP_MS + 1000);
+    CHECK(metsched_running(NODE, &k, &t) && k == MET_LOCAL && t == 2);
+    run_for(METSCHED_WAIT_MS + 1000);
     CHECK(fake_tel_sent == sent + 3);
     CHECK(!metsched_running(NODE, NULL, NULL));
     CHECK(s->last_ok == MET_BIT(MET_DEVICE) && s->last_failed == MET_BIT(MET_LOCAL));

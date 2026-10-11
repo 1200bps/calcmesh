@@ -194,9 +194,10 @@ A node can also be asked on a schedule, for the graphs and a log: `S` on its
 page picks the kinds (`D` `E` `P` `L`) and how often (Left/Right, 30 minutes
 to a day), Enter saves, and picking none turns it off. Up to 4 nodes; a
 scheduled node has a little clock by its name in the list. Each run asks for
-the kinds one at a time, asks once more for one that gets no answer within a
-minute, and otherwise waits for the next run; a request made by hand goes
-first. Schedules are kept in the settings (`metrics.sched1`-`4`), and the
+the kinds one at a time, a minute apart (an answer over several LongFast hops
+can take a while), waits 90 s for each answer, and asks once more five
+minutes later for one that got none; a request made by hand goes first. The
+schedule is at the bottom of the node's page. Schedules are kept in the settings (`metrics.sched1`-`4`), and the
 first run after boot comes 2 minutes after the node connects. Telemetry from
 a scheduled node, asked for or not (but not our own node's unasked minute-by-
 minute reports), and a line for each kind a run got nothing for, go to

@@ -253,18 +253,17 @@ static int tour(const char *dir) {
     key("enter");
     metsched_task(); // runs at once
     fake_ms += 9000;
+    key("end");
     err |= shot(dir, "42-metrics-sched-asking");
     scene_telemetry_answer(0);
-    for (int i = 0; i < 20; i++)
-        fake_ms += 500, metsched_task();
-    fake_ms += 60000, mesh_metrics_poll(), metsched_task(); // no local stats
-    fake_ms += 6000, metsched_task();
-    fake_ms += 61000, mesh_metrics_poll(), metsched_task(); // nor once more
-    metsched_task();
+    // No local stats, nor when asked again
+    for (int i = 0; i < (METSCHED_GAP_MS + 2 * METSCHED_WAIT_MS + METSCHED_RETRY_MS) / 500 + 4; i++)
+        fake_ms += 500, mesh_metrics_poll(), metsched_task();
     fake_ms += 25 * 60000;
     fake_epoch += 25 * 60;
     ui_set_now(SCENE_NOW + 25 * 60);
     type("x"); // redraw
+    key("end");
     err |= shot(dir, "43-metrics-sched");
     key("esc");
     err |= shot(dir, "44-metrics-sched-list");

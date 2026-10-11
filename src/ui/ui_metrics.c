@@ -12,7 +12,7 @@
 // the air; asking another is one packet each way. Up/Down scroll, Left/Right
 // step through the list's nodes, Esc goes back to the list.
 //
-// Above those, the node's metrics schedule (metsched.h), if it has one. S
+// Below those, the node's metrics schedule (metsched.h). S
 // edits it: D E P L pick the kinds, Left/Right how often, Enter saves (none
 // picked: no schedule), Esc leaves it as it was. Scheduled nodes have a
 // little clock by their name in the list.
@@ -504,7 +504,7 @@ static void sched_section(page_t *pg, uint32_t node) {
             snprintf(buf, sizeof buf, "asking for %s%s", kind_words[k],
                      try_no > 1 ? ", once more" : "");
         else
-            snprintf(buf, sizeof buf, "now");
+            snprintf(buf, sizeof buf, "running");
     } else if (!s->placed || mesh_link_state() != MESH_LINK_READY) {
         snprintf(buf, sizeof buf, "once connected");
     } else {
@@ -534,7 +534,7 @@ static void sched_key_start(uint32_t node) {
     editing = true;
     ed_kinds = s ? s->kinds : (uint8_t)(MET_BIT(MET_DEVICE) | MET_BIT(MET_LOCAL));
     ed_every = s ? s->every_min : 60;
-    scroll = 0;
+    scroll = INT_MAX / 2; // to the end, where it is; drawing pulls it back
 }
 
 static bool sched_key(uint16_t k) {
@@ -769,11 +769,11 @@ static void draw_detail(void) {
     fb_clip(0, D_TOP, FB_W, D_H);
     for (int pass = 0; pass < 2; pass++) {
         page_t pg = {.y = D_TOP - scroll};
-        sched_section(&pg, n->num);
         device_section(&pg, e);
         env_section(&pg, e);
         power_section(&pg, e);
         local_section(&pg, e, me);
+        sched_section(&pg, n->num);
         end_pairs(&pg);
         content_h = pg.y + scroll - D_TOP;
         int was = scroll;

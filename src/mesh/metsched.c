@@ -15,11 +15,12 @@ static uint32_t seen_version; // settings_version() as of our last read or write
 
 // The run in progress
 static uint32_t cur_node;      // 0: none
-static uint8_t cur_pending;    // kinds still to ask for
+static uint8_t cur_pending;    // kinds not yet answered or given up on
+static uint8_t cur_retry;      // of those, the ones to ask once more
+static uint32_t retry_at[MET_KINDS]; // when, link clock
 static met_kind_t cur_kind = MET_KINDS; // asking for now
 static bool cur_inflight;      // our request is the one metrics.c is on
 static uint32_t cur_seq;       // its mesh_metrics_req_seq()
-static int cur_try;            // 1 or 2
 static uint32_t gap_until;     // link clock
 
 static const uint16_t steps[] = {30, 60, 120, 180, 360, 720, 1440};
@@ -181,8 +182,10 @@ bool metsched_set(uint32_t node, uint8_t kinds, uint16_t every_min) {
     s->every_min = every;
     if (changed)
         place_changed(s, mesh_link_ms());
-    if (cur_node == node)
+    if (cur_node == node) {
         cur_pending &= kinds;
+        cur_retry &= kinds;
+    }
     save();
     return true;
 }
@@ -195,7 +198,7 @@ bool metsched_running(uint32_t node, met_kind_t *kind, int *try_no) {
     if (kind)
         *kind = cur_inflight ? cur_kind : MET_KINDS;
     if (try_no)
-        *try_no = cur_try ? cur_try : 1;
+        *try_no = cur_inflight && (cur_retry & MET_BIT(cur_kind)) ? 2 : 1;
     return true;
 }
 
@@ -230,9 +233,12 @@ static void step(met_sched_t *s, uint32_t now) {
         uint8_t bit = (uint8_t)MET_BIT(cur_kind);
         if (st == MET_REQ_DONE) {
             s->last_ok |= bit;
-        } else if (mesh_metrics_req_error() == MET_ERR_NO_ANSWER && cur_try < 2) {
-            cur_try++;
-            return; // once more
+        } else if (mesh_metrics_req_error() == MET_ERR_NO_ANSWER && !(cur_retry & bit)) {
+            // Once more, later; the other kinds meanwhile
+            cur_retry |= bit;
+            retry_at[cur_kind] = now + METSCHED_RETRY_MS;
+            cur_kind = MET_KINDS;
+            return;
         } else {
             uint8_t err = mesh_metrics_req_error();
             s->last_failed |= bit;
@@ -240,7 +246,7 @@ static void step(met_sched_t *s, uint32_t now) {
             metlog_failed(s->node, cur_kind, err, mesh_link_epoch());
         }
         cur_pending &= (uint8_t)~bit;
-        cur_try = 0;
+        cur_retry &= (uint8_t)~bit;
         cur_kind = MET_KINDS;
         return;
     }
@@ -251,9 +257,16 @@ static void step(met_sched_t *s, uint32_t now) {
     // A request made by hand goes first
     if (!reached(now, gap_until) || mesh_metrics_req_state() == MET_REQ_WAITING)
         return;
-    met_kind_t k = 0;
-    while (!(cur_pending & MET_BIT(k)))
-        k++;
+    // Kinds not asked yet first, then those due to be asked again
+    met_kind_t k = MET_KINDS;
+    for (met_kind_t i = 0; i < MET_KINDS && k == MET_KINDS; i++)
+        if ((cur_pending & ~cur_retry) & MET_BIT(i))
+            k = i;
+    for (met_kind_t i = 0; i < MET_KINDS && k == MET_KINDS; i++)
+        if ((cur_retry & MET_BIT(i)) && reached(now, retry_at[i]))
+            k = i;
+    if (k == MET_KINDS)
+        return;
     uint32_t wait = s->node == mesh_db.my_node_num ? MET_REQ_LOCAL_MS : METSCHED_WAIT_MS;
     if (!mesh_metrics_request_wait(s->node, k, wait)) {
         gap_until = now + METSCHED_GAP_MS; // no link after all: try again
@@ -262,8 +275,6 @@ static void step(met_sched_t *s, uint32_t now) {
     cur_kind = k;
     cur_seq = mesh_metrics_req_seq();
     cur_inflight = true;
-    if (!cur_try)
-        cur_try = 1;
 }
 
 void metsched_task(void) {
@@ -291,8 +302,8 @@ void metsched_task(void) {
         return;
     cur_node = s->node;
     cur_pending = s->kinds;
+    cur_retry = 0;
     cur_inflight = false;
-    cur_try = 0;
     cur_kind = MET_KINDS;
     s->started_ms = now;
     s->ran = true;
