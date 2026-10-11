@@ -440,7 +440,7 @@ typedef struct {
 static void env_section(page_t *pg, const mesh_metrics_t *e) {
     heading(pg, "Environment", e, MET_ENV, 'E');
     if (!e || !e->have[MET_ENV]) {
-        note(pg, "Nothing yet. Only nodes with sensors send it.");
+        note(pg, "Nothing yet.");
         return;
     }
     const meshtastic_EnvironmentMetrics *v = &e->env;
@@ -493,7 +493,7 @@ static void env_section(page_t *pg, const mesh_metrics_t *e) {
 static void power_section(page_t *pg, const mesh_metrics_t *e) {
     heading(pg, "Power", e, MET_POWER, 'P');
     if (!e || !e->have[MET_POWER]) {
-        note(pg, "Nothing yet. Only nodes with power sensors send it.");
+        note(pg, "Nothing yet.");
         return;
     }
     const meshtastic_PowerMetrics *w = &e->power;
@@ -520,11 +520,10 @@ static void power_section(page_t *pg, const mesh_metrics_t *e) {
     }
 }
 
-static void local_section(page_t *pg, const mesh_metrics_t *e, bool me) {
+static void local_section(page_t *pg, const mesh_metrics_t *e) {
     heading(pg, "Local stats", e, MET_LOCAL, 'L');
     if (!e || !e->have[MET_LOCAL]) {
-        note(pg, me ? "Our node sends these now and then, or ask."
-                    : "Nothing yet: other nodes send these only when asked.");
+        note(pg, "Nothing yet.");
         return;
     }
     const meshtastic_LocalStats *l = &e->local;
@@ -598,7 +597,7 @@ static void draw_detail(void) {
         device_section(&pg, e);
         env_section(&pg, e);
         power_section(&pg, e);
-        local_section(&pg, e, me);
+        local_section(&pg, e);
         end_pairs(&pg);
         content_h = pg.y + scroll - D_TOP;
         int was = scroll;
