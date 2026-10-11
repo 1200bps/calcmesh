@@ -226,7 +226,8 @@ static void ui_task(void) {
     static absolute_time_t next;
     static bool due = true;
     kbd_event_t ev;
-    while (kbd_get(&ev)) {
+    // The PicoCalc's keyboard, and the PC's through the screen mirror
+    while (kbd_get(&ev) || screenport_key(&ev)) {
         if (echo_keys)
             print_key(&ev);
         ui_key(&ev);

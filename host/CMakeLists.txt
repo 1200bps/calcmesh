@@ -124,6 +124,8 @@ if(Python3_FOUND)
         "$<TARGET_FILE:test_screenport> ${SP_DIR} && \
          ${Python3_EXECUTABLE} ${REPO_ROOT}/tools/screen.py -s 1 ${SP_DIR}/stream.bin ${SP_DIR}/got.png && \
          ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/pngcmp.py ${SP_DIR}/expect.png ${SP_DIR}/got.png")
+    add_test(NAME screen_keys COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_screen_keys.py)
 endif()
 
 add_executable(test_ui test_ui.c)

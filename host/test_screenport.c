@@ -112,6 +112,17 @@ static void loop(uint32_t chunk) {
     pc_read(chunk);
 }
 
+// The PC sends bytes the other way.
+static void pc_send(const void *data, uint32_t n) {
+    memcpy(fake_cdc_rx + fake_cdc_rx_len, data, n);
+    fake_cdc_rx_len += n;
+}
+
+static void pc_key(uint16_t key, uint8_t mods) {
+    uint8_t p[] = {0xFB, 'K', (uint8_t)key, (uint8_t)(key >> 8), mods};
+    pc_send(p, sizeof p);
+}
+
 static void press(uint16_t key) {
     kbd_event_t ev = {.key = key};
     ui_key(&ev);
@@ -185,6 +196,49 @@ int main(int argc, char **argv) {
     while (pc.frames == 0 && passes++ < 1000)
         loop(301);
     CHECK(pc.got_palette && pc.frames == 1 && pc_matches_fb() && !pc.bad);
+
+    // Keys from the PC, among junk and split across reads
+    kbd_event_t ev;
+    CHECK(!screenport_key(&ev));
+    pc_send("\xFB\xFBxyz\xFBR", 7);
+    pc_key('q', 0);
+    pc_key(KBD_F1 + 5, KBD_MOD_SHIFT);
+    pc_send("\xFB", 1);
+    pc_key('a', KBD_MOD_CTRL | 0x80);
+    pc_send("\xFB\x4B\x00", 3); // half a packet
+    loop(4096);
+    CHECK(fake_cdc_rx_len == 0);
+    CHECK(screenport_key(&ev) && ev.key == 'q' && !ev.mods && !ev.repeat);
+    CHECK(screenport_key(&ev) && ev.key == KBD_F1 + 5 && ev.mods == KBD_MOD_SHIFT);
+    CHECK(screenport_key(&ev) && ev.key == 'a' && ev.mods == KBD_MOD_CTRL &&
+          ev.repeat);
+    CHECK(!screenport_key(&ev));
+    pc_send("\x01\x00", 2); // ...and the rest of it
+    loop(4096);
+    CHECK(screenport_key(&ev) && ev.key == KBD_UP && !ev.mods);
+    CHECK(!screenport_key(&ev));
+    // A full queue drops the extras rather than overwriting
+    for (int i = 0; i < 20; i++)
+        pc_key((uint16_t)('a' + i), 0);
+    loop(4096);
+    int got = 0;
+    while (screenport_key(&ev))
+        CHECK(ev.key == 'a' + got++);
+    CHECK(got == 16);
+    // Closing drops what was queued and any half packet
+    pc_key('z', 0);
+    pc_send("\xFB\x4B", 2);
+    loop(4096);
+    fake_cdc_open = false;
+    loop(4096);
+    fake_cdc_open = true;
+    pc_reset();
+    pc_send("\x01\x01\x00", 3); // tail of the half packet: ignored
+    passes = 0;
+    while (pc.frames == 0 && passes++ < 1000)
+        loop(4096);
+    CHECK(!screenport_key(&ev));
+    CHECK(pc.frames == 1 && pc_matches_fb() && !pc.bad);
 
     if (stream) {
         fclose(stream);

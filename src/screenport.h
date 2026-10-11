@@ -13,9 +13,19 @@
 //   'E' 0      end of frame: every row sent so far is current; no payload
 //
 // On open the PC gets the palette and then every row.
+//
+// The PC can send keys back the same way, so the PicoCalc can be driven from
+// the PC's keyboard (tools/screen.py -v):
+//
+//   'K' key    a keypress: key is a KBD_* code (input/keys.h), then 1 byte,
+//              KBD_MOD_* bits, plus 0x80 if it's an auto-repeat
+//
+// Anything else from the PC is skipped.
 #pragma once
 
 #include <stdbool.h>
+
+#include "input/keys.h"
 
 // USB CDC instance of the screen port (see usb/usb_descriptors.c).
 #define SCREENPORT_USB_CDC 2
@@ -28,3 +38,6 @@ void screenport_task(void);
 
 // Whether a program has the port open.
 bool screenport_open(void);
+
+// The next key the PC sent, if any.
+bool screenport_key(kbd_event_t *ev);

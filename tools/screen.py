@@ -8,7 +8,8 @@ library only; the live window needs tkinter.
   screen.py PORT OUT.png        save one screen and exit
   screen.py -w PORT OUT.png     keep OUT.png up to date (for a viewer that
                                 reloads, e.g. feh -R 0.5 OUT.png)
-  screen.py -v PORT             live window
+  screen.py -v PORT             live window; keys typed into it go to the
+                                PicoCalc as if from its own keyboard
 
 PORT is /dev/serial/by-id/usb-calcmesh_Calcmesh_*-if05 (its ttyACM number
 depends on what else is plugged in). The stream restarts from a whole screen
@@ -28,6 +29,52 @@ import zlib
 W = H = 320
 STRIDE = W // 4
 MAGIC = 0xFB
+
+# Key codes from src/input/keys.h; printable ASCII is sent as itself.
+KBD_BACKSPACE, KBD_TAB, KBD_ENTER, KBD_ESC = 0x08, 0x09, 0x0A, 0x1B
+KBD_F1 = 0x110
+MOD_SHIFT, MOD_CTRL, MOD_ALT = 0x01, 0x02, 0x04
+KEYSYMS = {
+    "BackSpace": KBD_BACKSPACE,
+    "Tab": KBD_TAB,
+    "ISO_Left_Tab": KBD_TAB,  # Shift+Tab on X11
+    "Return": KBD_ENTER,
+    "KP_Enter": KBD_ENTER,
+    "Escape": KBD_ESC,
+    "Up": 0x100,
+    "Down": 0x101,
+    "Left": 0x102,
+    "Right": 0x103,
+    "Home": 0x104,
+    "End": 0x105,
+    "Prior": 0x106,
+    "Next": 0x107,
+    "Insert": 0x108,
+    "Delete": 0x109,
+    "Pause": 0x10A,
+    "Break": 0x10A,
+}
+KEYSYMS.update({"F%d" % n: KBD_F1 + n - 1 for n in range(1, 11)})
+
+
+def key_packet(keysym, char, shift=False, ctrl=False, alt=False):
+    """A key from the PC as a 'K' packet for the firmware, or None."""
+    mods = (shift and MOD_SHIFT) | (ctrl and MOD_CTRL) | (alt and MOD_ALT)
+    key = KEYSYMS.get(keysym)
+    if key is None:
+        if ctrl or alt:
+            # Shortcuts come as the plain lower-case key, as on the PicoCalc
+            ch = keysym if len(keysym) == 1 else char
+            if not ch or not " " <= ch <= "~":
+                return None
+            key = ord(ch.lower())
+        elif len(char) == 1 and " " <= char <= "~":
+            key = ord(char)  # Shift already applied, as on the PicoCalc
+        else:
+            return None  # a modifier on its own, or a key it doesn't have
+    elif shift and KBD_F1 <= key < KBD_F1 + 5:
+        key += 5  # the PicoCalc's Shift+F1..F5 are F6..F10
+    return struct.pack("<BBHB", MAGIC, ord("K"), key, mods)
 
 
 class Screen:
@@ -96,8 +143,8 @@ class Screen:
         )
 
 
-def open_port(path):
-    fd = os.open(path, os.O_RDONLY | os.O_NOCTTY)
+def open_port(path, write=False):
+    fd = os.open(path, (os.O_RDWR if write else os.O_RDONLY) | os.O_NOCTTY)
     if os.isatty(fd):
         attrs = termios.tcgetattr(fd)
         attrs[0] = 0  # iflag
@@ -160,6 +207,19 @@ def run_view(fd, screen, scale):
             state["img"] = tk.PhotoImage(data=png, format="png")
             label.configure(image=state["img"])
 
+    def key(ev):
+        # X11 state bits: Shift 0x1, Control 0x4, Mod1 (Alt) 0x8
+        pkt = key_packet(ev.keysym, ev.char, bool(ev.state & 0x1),
+                         bool(ev.state & 0x4), bool(ev.state & 0x8))
+        if pkt and writable:
+            try:
+                os.write(fd, pkt)
+            except OSError:
+                pass
+        return "break"  # keep Tab, F10 and the like away from Tk
+
+    writable = os.isatty(fd)
+    root.bind("<KeyPress>", key)
     root.createfilehandler(fd, tk.READABLE, readable)
     root.mainloop()
     return 0
@@ -182,7 +242,7 @@ def main():
         ap.error("OUT.png is needed unless -v")
     scale = max(1, args.scale)
 
-    fd = open_port(args.port)
+    fd = open_port(args.port, write=args.view)
     screen = Screen()
     try:
         if args.view:
