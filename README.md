@@ -190,6 +190,24 @@ nodes, and that survives a resync with the node (not a reboot). On the
 console, `metrics [node]` prints what's kept and `telreq <node> [device|env|
 power|local]` asks.
 
+A node can also be asked on a schedule, for the graphs and a log: `S` on its
+page picks the kinds (`D` `E` `P` `L`) and how often (Left/Right, 30 minutes
+to a day), Enter saves, and picking none turns it off. Up to 4 nodes; a
+scheduled node has a little clock by its name in the list. Each run asks for
+the kinds one at a time, a minute apart (an answer over several LongFast hops
+can take a while), waits 90 s for each answer, and asks once more five
+minutes later for one that got none; a request made by hand goes first. The
+schedule is at the bottom of the node's page. Schedules are kept in the settings (`metrics.sched1`-`4`), and the
+first run after boot comes 2 minutes after the node connects. Telemetry from
+a scheduled node, asked for or not (but not our own node's unasked minute-by-
+minute reports), and a line for each kind a run got nothing for, go to
+`/calcmesh/metrics/<node>-<kind>.tsv` on the card, one tab-separated file
+per node and kind (`src/sd/metlog.h` lists the columns). Local stats add
+graphs of packets heard per hour, nodes online and noise floor, and device
+metrics one of airtime. On the console, `metsched` lists the schedules and
+`metsched <node> <kinds|off> [minutes]` sets one. Use it sparingly on a busy
+mesh: every kind is a packet each way, each run.
+
 On the PicoCalc, the same framebuffer goes out the **screen** USB port
 whenever something has the port open, and `tools/screen.py` (Python 3, no
 extra packages) shows it:
@@ -219,9 +237,11 @@ to convert a row to its pixel format.
 - `src/mesh/nodeedit.[ch]` – editing the node's settings over the admin API, and checking they took
 - `src/mesh/remoteadmin.[ch]` – another node's settings over the mesh (PKI admin, session key, one message at a time)
 - `src/mesh/metrics.[ch]` – telemetry per node, its history, and asking a node for it
+- `src/mesh/metsched.[ch]` – asking nodes for metrics on a schedule
 - `src/mesh/cmd.[ch]` – console commands shared by the firmware and `meshcat`
 - `src/sd/msglog.[ch]` – message history on the card (portable; host-tested on a RAM disk)
 - `src/sd/settings.[ch]` – client settings in `/calcmesh/settings.txt` (portable; host-tested)
+- `src/sd/metlog.[ch]` – the scheduled nodes' telemetry, logged to the card (portable; host-tested)
 - `src/sd/sd.[ch]` – card detect, mount, retries; `sd_card.c` – SPI SD driver for FatFs
 - `src/ui/fb.[ch]` – framebuffer, drawing primitives, changed-row tracking
 - `src/ui/ui*.c` – tab bar, Nodes, Chats, Position, Metrics and Settings views, compose line

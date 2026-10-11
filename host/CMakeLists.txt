@@ -89,6 +89,8 @@ add_library(ui_fake STATIC ${UI_SRCS}
     ${REPO_ROOT}/src/mesh/nodeedit.c
     ${REPO_ROOT}/src/mesh/remoteadmin.c
     ${REPO_ROOT}/src/mesh/metrics.c
+    ${REPO_ROOT}/src/mesh/metsched.c
+    ${REPO_ROOT}/src/sd/metlog.c
     ${REPO_ROOT}/src/sd/settings.c
     fake/fake_link.c
     fake/fake_sd.c
@@ -160,3 +162,9 @@ target_include_directories(test_settings PRIVATE ${REPO_ROOT}/src .)
 target_link_libraries(test_settings fatfs_host)
 target_compile_options(test_settings PRIVATE ${WARN})
 add_test(NAME settings COMMAND test_settings)
+
+# Scheduled metrics requests and their SD log, against the stand-in link
+add_executable(test_metsched test_metsched.c)
+target_link_libraries(test_metsched ui_fake)
+target_compile_options(test_metsched PRIVATE ${WARN})
+add_test(NAME metsched COMMAND test_metsched)

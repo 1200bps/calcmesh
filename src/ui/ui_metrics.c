@@ -11,6 +11,11 @@
 // key to ask it for a fresh set: D, E, P or L. Asking our own node stays off
 // the air; asking another is one packet each way. Up/Down scroll, Left/Right
 // step through the list's nodes, Esc goes back to the list.
+//
+// Below those, the node's metrics schedule (metsched.h). S
+// edits it: D E P L pick the kinds, Left/Right how often, Enter saves (none
+// picked: no schedule), Esc leaves it as it was. Scheduled nodes have a
+// little clock by their name in the list.
 
 #include <limits.h>
 #include <math.h>
@@ -19,7 +24,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "link.h"
 #include "metrics.h"
+#include "metsched.h"
 #include "ui.h"
 #include "ui_internal.h"
 
@@ -27,12 +34,16 @@
 
 // --- list ------------------------------------------------------------------------
 
+#define STR_(x) #x
+#define TOSTR(x) STR_(x)
+
 #define HINT_Y (UI_BODY_Y + UI_BODY_H - UI_LH)
 #define ROWS ((HINT_Y - 2 - (UI_BODY_Y + UI_LH + 2)) / UI_LH)
 
 // Columns, in cells
 #define C_FAV 0
 #define C_SHORT 1
+#define C_SCHED 5 // a clock: it has a metrics schedule
 #define C_BATT 6  // 4
 #define C_VOLT 11 // 5
 #define C_SPARK 17
@@ -95,19 +106,25 @@ static int sort(void) {
 
 // --- history -------------------------------------------------------------------
 
-typedef enum { S_MV, S_BATT, S_CHUTIL, S_TEMP } series_t;
+typedef enum { S_MV, S_BATT, S_CHUTIL, S_TEMP, S_AIRTX, S_NOISE, S_ONLINE, S_RXPH } series_t;
 
 static float value(const met_point_t *p, series_t s) {
     switch (s) {
     case S_MV: return p->mv ? p->mv / 1000.0f : NAN;
     case S_BATT: return p->batt <= 100 ? p->batt : NAN; // not "powered"
     case S_CHUTIL: return p->chutil != MET_NONE_U8 ? p->chutil / 2.0f : NAN;
+    case S_AIRTX: return p->airtx != MET_NONE_U16 ? p->airtx / 100.0f : NAN;
+    case S_NOISE: return p->noise ? p->noise : NAN;
+    case S_ONLINE: return p->online != MET_NONE_U16 ? p->online : NAN;
+    case S_RXPH: return p->rxph != MET_NONE_U16 ? p->rxph : NAN;
     default: return p->temp != MET_NONE_TEMP ? p->temp / 10.0f : NAN;
     }
 }
 
 // Smallest span a graph covers, so noise doesn't fill the box
-static const float min_span[] = {[S_MV] = 0.1f, [S_BATT] = 5, [S_CHUTIL] = 2, [S_TEMP] = 2};
+static const float min_span[] = {[S_MV] = 0.1f, [S_BATT] = 5,   [S_CHUTIL] = 2,
+                                 [S_TEMP] = 2,   [S_AIRTX] = 0.5f, [S_NOISE] = 4,
+                                 [S_ONLINE] = 2, [S_RXPH] = 10};
 
 typedef struct {
     int n;                // points with a value
@@ -186,6 +203,18 @@ static const char *fmt_batt(const meshtastic_DeviceMetrics *d, char *buf, size_t
 
 // --- list view -----------------------------------------------------------------
 
+// A clock face, 5 px across, in the cell at x
+static void clock_mark(int x, int y, uint8_t c) {
+    x += 1, y += UI_LH / 2 - 3;
+    fb_hline(x + 1, y, 3, c);
+    fb_hline(x + 1, y + 4, 3, c);
+    fb_vline(x, y + 1, 3, c);
+    fb_vline(x + 4, y + 1, 3, c);
+    fb_pixel(x + 2, y + 1, c);
+    fb_pixel(x + 2, y + 2, c);
+    fb_pixel(x + 3, y + 2, c);
+}
+
 static void spark(int col, int y, const mesh_metrics_t *e, uint8_t c) {
     range_t r = range_of(e, S_MV);
     if (r.n < 2)
@@ -204,6 +233,8 @@ static void row(int y, const mesh_node_t *n, bool selected) {
     if (n->is_favorite)
         ui_cells(C_FAV, y, 1, "*", fg, FB_CLEAR);
     ui_cells(C_SHORT, y, 4, ui_node_short(n->num), fg, FB_CLEAR);
+    if (metsched_find(n->num))
+        clock_mark(C_SCHED * UI_CW, y, fg);
 
     if (!e || !e->have[MET_DEVICE]) {
         // The Nodes tab's battery, from its NodeInfo, is all there is
@@ -333,15 +364,11 @@ static void end_pairs(page_t *pg) {
     pg->half = 0;
 }
 
-// "Device ---- 12m ago ---- D: ask"
-static void heading(page_t *pg, const char *name, const mesh_metrics_t *e, met_kind_t k,
-                    char key) {
+// "Name ---------- right"
+static void rule(page_t *pg, const char *name, const char *right) {
     end_pairs(pg);
     pg->y += pg->y > D_TOP - scroll ? UI_LH / 2 : 0;
     int y = pg->y;
-    char right[24], age[8];
-    snprintf(right, sizeof right, "%s  %c: ask",
-             e && e->have[k] ? ui_ago(e->time[k], age) : "never", key);
     // A cell short of the edge, clear of the scroll bar
     int nl = utf8_cells(name), nr = utf8_cells(right);
     ui_cells(0, y, nl, name, FB_WHITE, FB_CLEAR);
@@ -350,13 +377,23 @@ static void heading(page_t *pg, const char *name, const mesh_metrics_t *e, met_k
     pg->y += UI_LH;
 }
 
-// A titled graph of one series, if there are two points or more
+// "Device ---- 12m ago ---- D: ask"
+static void heading(page_t *pg, const char *name, const mesh_metrics_t *e, met_kind_t k,
+                    char key) {
+    char right[24], age[8];
+    snprintf(right, sizeof right, "%s  %c: ask",
+             e && e->have[k] ? ui_ago(e->time[k], age) : "never", key);
+    rule(pg, name, right);
+}
+
+// A titled graph of one series, if there are two points or more and they
+// aren't all the same
 #define GRAPH_H 30
 
 static void graph(page_t *pg, const mesh_metrics_t *e, series_t s, const char *name,
                   const char *fmt, const char *unit) {
     range_t r = range_of(e, s);
-    if (r.n < 2)
+    if (r.n < 2 || r.lo == r.hi)
         return;
     end_pairs(pg);
     char title[64], lo[12], hi[12], span[8];
@@ -381,6 +418,139 @@ static void graph(page_t *pg, const mesh_metrics_t *e, series_t s, const char *n
             fb_pixel(xx, pg->y + i * GRAPH_H / 4, FB_DIM);
     plot(x + 2, pg->y + 2, w - 4, GRAPH_H - 4, e, s, FB_WHITE);
     pg->y += GRAPH_H + 3;
+}
+
+// --- the schedule ----------------------------------------------------------------
+
+static bool editing;
+static uint8_t ed_kinds;
+static uint16_t ed_every;
+static const char *sched_msg; // instead of the hint, until a key
+
+static const char *const kind_words[MET_KINDS] = {
+    [MET_DEVICE] = "device", [MET_ENV] = "env", [MET_POWER] = "power", [MET_LOCAL] = "local"};
+
+static const char *fmt_every(uint16_t min, char *buf, size_t len) {
+    if (min % 60)
+        snprintf(buf, len, "%um", min);
+    else
+        snprintf(buf, len, "%uh", min / 60);
+    return buf;
+}
+
+static const char *fmt_kinds(uint8_t kinds, char *buf, size_t len) {
+    buf[0] = 0;
+    for (int k = 0; k < MET_KINDS; k++)
+        if (kinds & MET_BIT(k))
+            snprintf(buf + strlen(buf), len - strlen(buf), "%s%s", buf[0] ? ", " : "",
+                     kind_words[k]);
+    return buf;
+}
+
+// A label and a value as wide as the page
+static void line(page_t *pg, const char *label, const char *val) {
+    end_pairs(pg);
+    ui_cells(C_L1, pg->y, W_LABEL, label, FB_GREY, FB_CLEAR);
+    ui_cells(C_V1, pg->y, UI_COLS - C_V1 - 2, val, FB_WHITE, FB_CLEAR);
+    pg->y += UI_LH;
+}
+
+static void sched_edit(page_t *pg) {
+    end_pairs(pg);
+    ui_cells(C_L1, pg->y, W_LABEL, "Ask for", FB_GREY, FB_CLEAR);
+    int col = C_V1;
+    for (int k = 0; k < MET_KINDS; k++) {
+        bool on = ed_kinds & MET_BIT(k);
+        int w = (int)strlen(kind_words[k]) + 2;
+        char word[12];
+        snprintf(word, sizeof word, " %s ", kind_words[k]);
+        word[1] = (char)(word[1] - 'a' + 'A');
+        ui_cells(col, pg->y, w, word, on ? FB_BLACK : FB_GREY, on ? FB_WHITE : FB_CLEAR);
+        col += w + 1;
+    }
+    pg->y += UI_LH;
+    char buf[16], e[8];
+    ui_cells(C_L1, pg->y, W_LABEL, "Every", FB_GREY, FB_CLEAR);
+    snprintf(buf, sizeof buf, " %s ", fmt_every(ed_every, e, sizeof e));
+    ui_cells(C_V1, pg->y, utf8_cells(buf), buf, FB_BLACK, FB_WHITE);
+    pg->y += UI_LH;
+}
+
+static void sched_section(page_t *pg, uint32_t node) {
+    const met_sched_t *s = metsched_find(node);
+    char right[32], buf[64], a[8], b[40];
+    if (editing) {
+        rule(pg, "Schedule", "Enter: save");
+        sched_edit(pg);
+        return;
+    }
+    if (!s) {
+        rule(pg, "Schedule", "off  S: set");
+        return;
+    }
+    snprintf(right, sizeof right, "every %s  S: change", fmt_every(s->every_min, a, sizeof a));
+    rule(pg, "Schedule", right);
+    line(pg, "Asks for", fmt_kinds(s->kinds, b, sizeof b));
+    met_kind_t k;
+    int try_no;
+    if (metsched_running(node, &k, &try_no)) {
+        if (k < MET_KINDS)
+            snprintf(buf, sizeof buf, "asking for %s%s", kind_words[k],
+                     try_no > 1 ? ", once more" : "");
+        else
+            snprintf(buf, sizeof buf, "running");
+    } else if (!s->placed || mesh_link_state() != MESH_LINK_READY) {
+        snprintf(buf, sizeof buf, "once connected");
+    } else {
+        uint32_t m = (metsched_due_in_ms(s) + 59999) / 60000;
+        if (m >= 60)
+            snprintf(buf, sizeof buf, "in %luh %02lum", (unsigned long)(m / 60),
+                     (unsigned long)(m % 60));
+        else
+            snprintf(buf, sizeof buf, "in %lum", (unsigned long)m);
+    }
+    line(pg, "Next", buf);
+    if (s->last_epoch) {
+        uint8_t missed = s->last_failed;
+        if (!s->last_ok)
+            snprintf(buf, sizeof buf, "%s ago: nothing came back", ui_ago(s->last_epoch, a));
+        else if (missed)
+            snprintf(buf, sizeof buf, "%s ago: no %s", ui_ago(s->last_epoch, a),
+                     fmt_kinds(missed, b, sizeof b));
+        else
+            snprintf(buf, sizeof buf, "%s ago: got it all", ui_ago(s->last_epoch, a));
+        line(pg, "Last run", buf);
+    }
+}
+
+static void sched_key_start(uint32_t node) {
+    const met_sched_t *s = metsched_find(node);
+    editing = true;
+    ed_kinds = s ? s->kinds : (uint8_t)(MET_BIT(MET_DEVICE) | MET_BIT(MET_LOCAL));
+    ed_every = s ? s->every_min : 60;
+    scroll = INT_MAX / 2; // to the end, where it is; drawing pulls it back
+}
+
+static bool sched_key(uint16_t k) {
+    switch (k) {
+    case 'd': ed_kinds ^= MET_BIT(MET_DEVICE); break;
+    case 'e': ed_kinds ^= MET_BIT(MET_ENV); break;
+    case 'p': ed_kinds ^= MET_BIT(MET_POWER); break;
+    case 'l': ed_kinds ^= MET_BIT(MET_LOCAL); break;
+    case KBD_LEFT:
+    case '-': ed_every = metsched_step(ed_every, -1); break;
+    case KBD_RIGHT:
+    case '+': ed_every = metsched_step(ed_every, 1); break;
+    case KBD_ENTER:
+        editing = false;
+        if (!metsched_set(sel_num, ed_kinds, ed_every))
+            sched_msg = "All " TOSTR(METSCHED_MAX) " schedules are in use.";
+        break;
+    case KBD_ESC:
+    case KBD_BACKSPACE: editing = false; break;
+    default: break;
+    }
+    return true;
 }
 
 static void device_section(page_t *pg, const mesh_metrics_t *e) {
@@ -415,6 +585,7 @@ static void device_section(page_t *pg, const mesh_metrics_t *e) {
     else
         graph(pg, e, S_BATT, "Battery", "%.0f", "%");
     graph(pg, e, S_CHUTIL, "Ch util", "%.1f", "%");
+    graph(pg, e, S_AIRTX, "Air TX", "%.2f", "%");
 }
 
 // Environment metrics: every float or integer the node said it has
@@ -545,6 +716,9 @@ static void local_section(page_t *pg, const mesh_metrics_t *e) {
     }
 #undef U
     end_pairs(pg);
+    graph(pg, e, S_RXPH, "Heard", "%.0f", "/h");
+    graph(pg, e, S_ONLINE, "Online", "%.0f", " nodes");
+    graph(pg, e, S_NOISE, "Noise", "%.0f", " dBm");
 }
 
 static void fix_scroll(void) {
@@ -584,6 +758,7 @@ static void draw_detail(void) {
         env_section(&pg, e);
         power_section(&pg, e);
         local_section(&pg, e);
+        sched_section(&pg, n->num);
         end_pairs(&pg);
         content_h = pg.y + scroll - D_TOP;
         int was = scroll;
@@ -601,13 +776,13 @@ static void draw_detail(void) {
     }
 
     fb_hline(0, HINT_Y - 1, FB_W, FB_DIM);
-    const char *st = req_text(n->num);
+    const char *st = editing ? NULL : sched_msg ? sched_msg : req_text(n->num);
     if (st)
         ui_cells(0, HINT_Y, UI_COLS, st, FB_WHITE, FB_CLEAR);
     else
         ui_cells(0, HINT_Y, UI_COLS,
-                 me ? "D E P L: ask our node  Esc: list"
-                    : "D E P L: ask it  Esc: list",
+                 editing ? "D E P L: pick  Left/Right: how often  Enter: save"
+                         : "D E P L: ask  S: schedule  Esc: list",
                  FB_DIM, FB_CLEAR);
 }
 
@@ -616,7 +791,11 @@ static bool detail_key(const kbd_event_t *ev) {
     uint16_t k = ev->key;
     if (k >= 'A' && k <= 'Z')
         k = (uint16_t)(k - 'A' + 'a');
+    sched_msg = NULL;
+    if (editing)
+        return sched_key(k);
     switch (k) {
+    case 's': sched_key_start(sel_num); return true;
     case 'd': return ask(sel_num, MET_DEVICE);
     case 'e': return ask(sel_num, MET_ENV);
     case 'p': return ask(sel_num, MET_POWER);
@@ -712,6 +891,8 @@ bool ui_metrics_key(const kbd_event_t *ev) {
     }
     if (ev->key == KBD_ENTER) {
         detail = true;
+        editing = false;
+        sched_msg = NULL;
         scroll = 0;
         status_dismissed |= mesh_metrics_req_state() != MET_REQ_WAITING;
         return true;

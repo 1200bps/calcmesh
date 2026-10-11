@@ -35,6 +35,7 @@ add_executable(calcmesh
     src/mesh/nodeedit.c
     src/mesh/remoteadmin.c
     src/mesh/metrics.c
+    src/mesh/metsched.c
     src/ui/fb.c
     src/ui/font.c
     src/ui/font_6x12.c
@@ -45,6 +46,7 @@ add_executable(calcmesh
     src/ui/ui_position.c
     src/ui/ui_metrics.c
     src/ui/ui_settings.c
+    src/sd/metlog.c
     src/sd/msglog.c
     src/sd/settings.c
     src/sd/sd.c

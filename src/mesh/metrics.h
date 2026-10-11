@@ -41,12 +41,19 @@ typedef enum {
 
 // One history point. Each telemetry packet adds what it carried; the rest
 // stays "none".
+#define MET_NONE_U16 0xFFFF
+
 typedef struct {
     uint32_t time;  // node clock, epoch seconds
     uint16_t mv;    // battery voltage, mV; 0 none
     uint8_t batt;   // percent, 101 external power; MET_NONE_U8 none
     uint8_t chutil; // channel utilisation, half-percent steps; MET_NONE_U8 none
     int16_t temp;   // tenths of a degree C; MET_NONE_TEMP none
+    uint16_t airtx; // airtime used transmitting, hundredths of a percent; MET_NONE_U16 none
+    // From local stats:
+    uint16_t online; // nodes online; MET_NONE_U16 none
+    uint16_t rxph;   // packets received per hour since the last local stats; MET_NONE_U16 none
+    int8_t noise;    // noise floor, dBm; 0 none
 } met_point_t;
 
 typedef struct {
@@ -101,6 +108,8 @@ typedef enum {
 // other it's one packet out and one back. A new request replaces one still
 // waiting (a late answer to the old one is still kept). False with no link.
 bool mesh_metrics_request(uint32_t node, met_kind_t kind);
+// The same, giving up after wait_ms instead.
+bool mesh_metrics_request_wait(uint32_t node, met_kind_t kind, uint32_t wait_ms);
 // Call regularly: gives up on a request after its time.
 void mesh_metrics_poll(void);
 
@@ -111,12 +120,20 @@ met_kind_t mesh_metrics_req_kind(void);
 uint32_t mesh_metrics_req_age_ms(void);
 // meshtastic_Routing_Error or MET_ERR_*
 uint8_t mesh_metrics_req_error(void);
+// Goes up by one with every request, so whoever sent one can tell whether
+// the state above is still about theirs.
+uint32_t mesh_metrics_req_seq(void);
 
 // From link.c: an answer or routing result for a packet we sent.
 void mesh_metrics_answer(uint32_t request_id, uint32_t from);
 void mesh_metrics_routing(uint32_t request_id, uint32_t from, uint8_t error);
 
 const char *mesh_metrics_kind_name(met_kind_t k); // "device metrics", "local stats"...
+
+// Called after each Telemetry is taken into the table (set once; NULL for
+// none). Nothing on the card happens in it; metsched.c queues a log line.
+typedef void (*met_add_cb)(const mesh_metrics_t *e, met_kind_t kind, uint32_t time);
+void mesh_metrics_on_add(met_add_cb cb);
 
 // Print one node's metrics (stdout; USB serial on the Pico).
 void mesh_metrics_dump(uint32_t num);

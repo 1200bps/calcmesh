@@ -36,7 +36,7 @@ static char *word(char **rest) {
 
 // A short name, "!a1b2c3d4", "0xa1b2c3d4", or a decimal node number. Short
 // names come first: they can start with digits ("12Tc").
-static uint32_t parse_node(const char *s) {
+uint32_t mesh_cmd_parse_node(const char *s) {
     for (int i = 0; i < mesh_db.node_count; i++) {
         const mesh_node_t *n = &mesh_db.nodes[i];
         if (n->has_user && strcasecmp(n->short_name, s) == 0)
@@ -137,7 +137,7 @@ bool mesh_cmd_run(char *line) {
         send(MESH_CONV_CHANNEL(c), rest);
     } else if (strcmp(cmd, "dm") == 0) {
         char *who = word(&rest);
-        uint32_t node = who ? parse_node(who) : 0;
+        uint32_t node = who ? mesh_cmd_parse_node(who) : 0;
         if (!who || !*rest) {
             printf("usage: dm <!nodeid|shortname> <text>\n");
             return true;
@@ -159,7 +159,7 @@ bool mesh_cmd_run(char *line) {
         if (parse_channel(which, &c)) {
             conv = MESH_CONV_CHANNEL(c);
         } else {
-            uint32_t node = parse_node(which);
+            uint32_t node = mesh_cmd_parse_node(which);
             if (!node) {
                 printf("unknown channel or node '%s'\n", which);
                 return true;
@@ -172,7 +172,7 @@ bool mesh_cmd_run(char *line) {
     } else if (strcmp(cmd, "metrics") == 0 || strcmp(cmd, "telreq") == 0) {
         bool req = cmd[0] == 't';
         char *who = word(&rest);
-        uint32_t node = who ? parse_node(who) : mesh_db.my_node_num;
+        uint32_t node = who ? mesh_cmd_parse_node(who) : mesh_db.my_node_num;
         if (req && !who) {
             printf("usage: telreq <node> [device|env|power|local]\n");
             return true;
