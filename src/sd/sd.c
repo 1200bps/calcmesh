@@ -8,6 +8,7 @@
 #include "ff.h"
 #include "mesh/link.h"
 #include "mesh/msgs.h"
+#include "sd/metlog.h"
 #include "sd/msglog.h"
 #include "sd/settings.h"
 
@@ -41,6 +42,7 @@ static const char *fs_name(void) {
 }
 
 static void unmount(void) {
+    metlog_set_online(false);
     msglog_close();
     f_unmount("");
     sd_card_eject();
@@ -65,6 +67,7 @@ static bool mount(bool restore) {
             printf("\n");
             state = SD_READY;
             error_reported = false;
+            metlog_set_online(true);
             return true;
         }
     } else if (!error_reported) {
@@ -154,6 +157,8 @@ void sd_task(void) {
 
     if (msglog_pending() && msglog_flush() < 0)
         goto card_error;
+    if (metlog_pending() && metlog_flush() < 0)
+        goto card_error;
     return;
 
 card_error:
@@ -179,4 +184,7 @@ void sd_print_status(void) {
     printf("history: %lu restored, %lu written, %lu not saved, %lu errors\n",
            (unsigned long)s->restored, (unsigned long)s->written,
            (unsigned long)s->dropped, (unsigned long)s->errors);
+    const metlog_stats_t *m = metlog_stats();
+    printf("metrics log: %lu lines written, %lu not saved, %lu errors\n",
+           (unsigned long)m->written, (unsigned long)m->dropped, (unsigned long)m->errors);
 }

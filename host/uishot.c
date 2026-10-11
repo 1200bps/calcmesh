@@ -17,6 +17,7 @@
 #include "mesh/nodeedit.h"
 #include "meshtastic/mesh.pb.h"
 #include "png.h"
+#include "metsched.h"
 #include "scene.h"
 #include "ui.h"
 
@@ -242,6 +243,31 @@ static int tour(const char *dir) {
         key("down");
     key("enter");
     err |= shot(dir, "40-metrics-weather");
+
+    // Scheduling Ridge Repeater: device and local stats every 2 hours
+    fake_epoch = SCENE_NOW;
+    key("esc"), key("home"), key("down"), key("enter");
+    type("s");
+    key("right");
+    err |= shot(dir, "41-metrics-sched-edit");
+    key("enter");
+    metsched_task(); // runs at once
+    fake_ms += 9000;
+    key("end");
+    err |= shot(dir, "42-metrics-sched-asking");
+    scene_telemetry_answer(0);
+    // No local stats, nor when asked again
+    for (int i = 0; i < (METSCHED_GAP_MS + 2 * METSCHED_WAIT_MS + METSCHED_RETRY_MS) / 500 + 4; i++)
+        fake_ms += 500, mesh_metrics_poll(), metsched_task();
+    fake_ms += 25 * 60000;
+    fake_epoch += 25 * 60;
+    ui_set_now(SCENE_NOW + 25 * 60);
+    type("x"); // redraw
+    key("end");
+    err |= shot(dir, "43-metrics-sched");
+    key("esc");
+    err |= shot(dir, "44-metrics-sched-list");
+    metsched_set(scene_node(0), 0, 0);
     return err;
 }
 

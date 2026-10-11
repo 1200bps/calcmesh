@@ -20,6 +20,7 @@
 #include "lcd/lcd.h"
 #include "mesh/cmd.h"
 #include "mesh/metrics.h"
+#include "mesh/metsched.h"
 #include "mesh/nodeedit.h"
 #include "meshlink.h"
 #include "screenport.h"
@@ -160,6 +161,27 @@ static void run_command(char *line) {
             printf("battery not read yet\n");
         else
             printf("battery %d%%%s\n", pct, chg ? ", charging" : "");
+    } else if (strcmp(cmd, "metsched") == 0) {
+        char *what = strtok(NULL, " \t");
+        char *every = strtok(NULL, " \t");
+        if (arg) {
+            uint32_t node = mesh_cmd_parse_node(arg);
+            uint8_t kinds = 0;
+            char *end = NULL;
+            long min = every ? strtol(every, &end, 10) : 60;
+            if (!node || !what || (strcmp(what, "off") && !metsched_parse_kinds(what, &kinds)) ||
+                (every && (*end || min < METSCHED_MIN_MIN || min > METSCHED_MAX_MIN))) {
+                printf("usage: metsched <node> <kinds|off> [minutes]\n"
+                       "  kinds: any of d e p l; minutes %d-%d, default 60\n",
+                       METSCHED_MIN_MIN, METSCHED_MAX_MIN);
+                return;
+            }
+            if (!metsched_set(node, kinds, (uint16_t)min)) {
+                printf("all %d schedules are in use\n", METSCHED_MAX);
+                return;
+            }
+        }
+        metsched_print();
     } else if (strcmp(cmd, "version") == 0) {
         printf("calcmesh %s\n", CALCMESH_VERSION);
     } else if (strcmp(cmd, "help") == 0) {
@@ -175,6 +197,10 @@ static void run_command(char *line) {
                "kbl [0-255]            keyboard backlight (steps of 32, 0 = off)\n"
                "                       (desktop, keys, bl and kbl are saved, as\n"
                "                       on the Settings tab)\n"
+               "metsched               scheduled metrics requests\n"
+               "metsched <node> <kinds|off> [minutes]\n"
+               "                       ask a node for d e p l metrics every\n"
+               "                       30-1440 minutes (saved; transmits)\n"
                "bat                    PicoCalc battery\n"
                "version                calcmesh's version\n");
     } else {
@@ -263,6 +289,7 @@ int main(void) {
     printf("calcmesh up\n");
 
     sd_init(); // before the link: loads settings and saved messages
+    metsched_init();
     meshlink_init();
     kbd_init();
     backlight_init(); // saved levels, from the settings
@@ -282,6 +309,7 @@ int main(void) {
         chime_task();
         mesh_edit_poll();
         mesh_metrics_poll();
+        metsched_task();
         ui_task();
         screenport_task();
         if (meshlink_rx_overruns() != overruns) {

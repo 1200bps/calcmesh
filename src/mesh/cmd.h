@@ -3,6 +3,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 // Run one command line (modified in place). Returns false, with the line as
 // it was, if the first word isn't one of ours, so the caller can try its own
@@ -11,3 +12,6 @@ bool mesh_cmd_run(char *line);
 
 // Print a line per command.
 void mesh_cmd_help(void);
+
+// A short name, "!a1b2c3d4", "0xa1b2c3d4" or a decimal node number; 0 if none.
+uint32_t mesh_cmd_parse_node(const char *s);
