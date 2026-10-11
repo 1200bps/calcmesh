@@ -364,12 +364,6 @@ static void end_pairs(page_t *pg) {
     pg->half = 0;
 }
 
-static void note(page_t *pg, const char *text) {
-    end_pairs(pg);
-    ui_cells(C_L1, pg->y, UI_COLS - 2, text, FB_GREY, FB_CLEAR);
-    pg->y += UI_LH;
-}
-
 // "Name ---------- right"
 static void rule(page_t *pg, const char *name, const char *right) {
     end_pairs(pg);
@@ -561,10 +555,8 @@ static bool sched_key(uint16_t k) {
 
 static void device_section(page_t *pg, const mesh_metrics_t *e) {
     heading(pg, "Device", e, MET_DEVICE, 'D');
-    if (!e || !e->have[MET_DEVICE]) {
-        note(pg, "Nothing yet.");
+    if (!e || !e->have[MET_DEVICE])
         return;
-    }
     const meshtastic_DeviceMetrics *d = &e->device;
     char buf[24];
     if (d->has_battery_level) {
@@ -610,10 +602,8 @@ typedef struct {
 
 static void env_section(page_t *pg, const mesh_metrics_t *e) {
     heading(pg, "Environment", e, MET_ENV, 'E');
-    if (!e || !e->have[MET_ENV]) {
-        note(pg, "Nothing yet. Only nodes with sensors send it.");
+    if (!e || !e->have[MET_ENV])
         return;
-    }
     const meshtastic_EnvironmentMetrics *v = &e->env;
     char buf[24];
     static const env_field_t fields[] = {
@@ -663,10 +653,8 @@ static void env_section(page_t *pg, const mesh_metrics_t *e) {
 
 static void power_section(page_t *pg, const mesh_metrics_t *e) {
     heading(pg, "Power", e, MET_POWER, 'P');
-    if (!e || !e->have[MET_POWER]) {
-        note(pg, "Nothing yet. Only nodes with power sensors send it.");
+    if (!e || !e->have[MET_POWER])
         return;
-    }
     const meshtastic_PowerMetrics *w = &e->power;
     const struct {
         bool hv, hc;
@@ -691,13 +679,10 @@ static void power_section(page_t *pg, const mesh_metrics_t *e) {
     }
 }
 
-static void local_section(page_t *pg, const mesh_metrics_t *e, bool me) {
+static void local_section(page_t *pg, const mesh_metrics_t *e) {
     heading(pg, "Local stats", e, MET_LOCAL, 'L');
-    if (!e || !e->have[MET_LOCAL]) {
-        note(pg, me ? "Our node sends these now and then, or ask."
-                    : "Nothing yet: other nodes send these only when asked.");
+    if (!e || !e->have[MET_LOCAL])
         return;
-    }
     const meshtastic_LocalStats *l = &e->local;
     char buf[24];
 #define U(label, v)                                                            \
@@ -772,7 +757,7 @@ static void draw_detail(void) {
         device_section(&pg, e);
         env_section(&pg, e);
         power_section(&pg, e);
-        local_section(&pg, e, me);
+        local_section(&pg, e);
         sched_section(&pg, n->num);
         end_pairs(&pg);
         content_h = pg.y + scroll - D_TOP;
@@ -797,8 +782,7 @@ static void draw_detail(void) {
     else
         ui_cells(0, HINT_Y, UI_COLS,
                  editing ? "D E P L: pick  Left/Right: how often  Enter: save"
-                 : me    ? "D E P L: ask (off the air)  S: schedule  Esc: list"
-                         : "D E P L: ask (on the air)  S: schedule  Esc: list",
+                         : "D E P L: ask  S: schedule  Esc: list",
                  FB_DIM, FB_CLEAR);
 }
 

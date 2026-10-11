@@ -47,7 +47,6 @@ typedef enum {
     F_REGION,
     F_PRESET,
     F_HOPS,
-    F_TX_POWER,
     F_TX_ENABLED,
     // Channels (arg: index)
     F_CHANNEL,
@@ -55,7 +54,7 @@ typedef enum {
     F_GPS,
     F_POS_SECS,
     F_POS_SMART,
-    F_FIXED,
+    F_SMART_SECS,
     F_POWER_SAVE,
     F_BLUETOOTH,
     F_NODE_LAST = F_BLUETOOTH,
@@ -135,6 +134,9 @@ static const char *const gps_names[] = {"Off", "On", "Not present"};
 static const int pos_steps[] = {0, 60, 120, 300, 600, 900, 1800, 3600,
                                 7200, 21600, 43200, 86400};
 #define N_POS_STEPS ((int)(sizeof pos_steps / sizeof pos_steps[0]))
+// Smart position's minimum interval: the soonest it sends again on moving
+static const int smart_steps[] = {0, 30, 60, 120, 300, 600, 900, 1800, 3600};
+#define N_SMART_STEPS ((int)(sizeof smart_steps / sizeof smart_steps[0]))
 // NodeInfo broadcast steps (0: the firmware's default, 3h; it won't go under 1h)
 static const int nodeinfo_steps[] = {0, 3600, 7200, 10800, 21600, 43200, 86400};
 #define N_NODEINFO_STEPS ((int)(sizeof nodeinfo_steps / sizeof nodeinfo_steps[0]))
@@ -178,7 +180,6 @@ static kind_t kind_of(int f) {
         return K_TEXT;
     case F_TX_ENABLED:
     case F_POS_SMART:
-    case F_FIXED:
     case F_POWER_SAVE:
     case F_BLUETOOTH:
     case F_ECHO:
@@ -186,7 +187,6 @@ static kind_t kind_of(int f) {
     case F_CHIME_CH:
         return K_BOOL;
     case F_HOPS:
-    case F_TX_POWER:
     case F_LCD:
     case F_KBD:
     case F_IDLE:
@@ -212,13 +212,12 @@ static uint32_t section_of(int f, int arg) {
     case F_REGION:
     case F_PRESET:
     case F_HOPS:
-    case F_TX_POWER:
     case F_TX_ENABLED: return MESH_EDIT_LORA;
     case F_CHANNEL: return MESH_EDIT_CHANNEL(arg);
     case F_GPS:
     case F_POS_SECS:
     case F_POS_SMART:
-    case F_FIXED: return MESH_EDIT_POSITION;
+    case F_SMART_SECS: return MESH_EDIT_POSITION;
     case F_POWER_SAVE: return MESH_EDIT_POWER;
     case F_BLUETOOTH: return MESH_EDIT_BLUETOOTH;
     default: return 0;
@@ -235,7 +234,6 @@ static const char *label_of(int f, int arg) {
     case F_REGION: return "Region";
     case F_PRESET: return "Modem preset";
     case F_HOPS: return "Hop limit";
-    case F_TX_POWER: return "TX power";
     case F_TX_ENABLED: return "Transmit";
     case F_CHANNEL:
         snprintf(buf, sizeof buf, "Channel %d name", arg);
@@ -243,7 +241,7 @@ static const char *label_of(int f, int arg) {
     case F_GPS: return "GPS";
     case F_POS_SECS: return "Send position";
     case F_POS_SMART: return "Smart position";
-    case F_FIXED: return "Fixed position";
+    case F_SMART_SECS: return "Smart interval";
     case F_POWER_SAVE: return "Power saving";
     case F_BLUETOOTH: return "Bluetooth";
     case F_LCD: return "Screen light";
@@ -308,12 +306,11 @@ static int get(const mesh_edit_t *e, int f) {
     case F_REGION: return e->lora.region;
     case F_PRESET: return e->lora.modem_preset;
     case F_HOPS: return (int)e->lora.hop_limit;
-    case F_TX_POWER: return e->lora.tx_power;
     case F_TX_ENABLED: return e->lora.tx_enabled;
     case F_GPS: return e->position.gps_mode;
     case F_POS_SECS: return (int)e->position.position_broadcast_secs;
     case F_POS_SMART: return e->position.position_broadcast_smart_enabled;
-    case F_FIXED: return e->position.fixed_position;
+    case F_SMART_SECS: return (int)e->position.broadcast_smart_minimum_interval_secs;
     case F_POWER_SAVE: return e->power.is_power_saving;
     case F_BLUETOOTH: return e->bluetooth.enabled;
     case F_LCD: return (int)settings_get_int(SET_SCREEN_BACKLIGHT, -1);
@@ -334,12 +331,11 @@ static void set(mesh_edit_t *e, int f, int v) {
     case F_REGION: e->lora.region = (meshtastic_Config_LoRaConfig_RegionCode)v; break;
     case F_PRESET: e->lora.modem_preset = (meshtastic_Config_LoRaConfig_ModemPreset)v; break;
     case F_HOPS: e->lora.hop_limit = (uint32_t)v; break;
-    case F_TX_POWER: e->lora.tx_power = v; break;
     case F_TX_ENABLED: e->lora.tx_enabled = v; break;
     case F_GPS: e->position.gps_mode = (meshtastic_Config_PositionConfig_GpsMode)v; break;
     case F_POS_SECS: e->position.position_broadcast_secs = (uint32_t)v; break;
     case F_POS_SMART: e->position.position_broadcast_smart_enabled = v; break;
-    case F_FIXED: e->position.fixed_position = v; break;
+    case F_SMART_SECS: e->position.broadcast_smart_minimum_interval_secs = (uint32_t)v; break;
     case F_POWER_SAVE: e->power.is_power_saving = v; break;
     case F_BLUETOOTH: e->bluetooth.enabled = v; break;
     // Ours take effect from the table (backlight.c, main.c) and get saved
@@ -380,14 +376,9 @@ static const char *value_str(const mesh_edit_t *e, int f, int arg, char *buf) {
     case F_PRESET:
         return e->lora.use_preset ? mesh_db_preset_name((uint8_t)v) : "Custom (not a preset)";
     case F_HOPS: snprintf(buf, 12, "%d", v); return buf;
-    case F_TX_POWER:
-        if (v)
-            snprintf(buf, 12, "%d dBm", v);
-        else
-            strcpy(buf, "default");
-        return buf;
     case F_GPS: return name_of(gps_names, 3, v, buf);
-    case F_POS_SECS: fmt_secs(v, buf); return buf;
+    case F_POS_SECS:
+    case F_SMART_SECS: fmt_secs(v, buf); return buf;
     case F_NODEINFO_SECS:
         if (v == 0)
             return "default (3h)";
@@ -455,10 +446,13 @@ static bool step(int f, int dir) {
         n = (n + dir + N_PRESETS) % N_PRESETS;
         break;
     case F_HOPS: n = v + dir; if (n < 1 || n > 7) return false; break;
-    case F_TX_POWER: n = v + dir; if (n < 0 || n > 30) return false; break;
     case F_GPS: n = (v + dir + 3) % 3; break;
     case F_POS_SECS:
         if (!next_step(pos_steps, N_POS_STEPS, v, dir, &n))
+            return false;
+        break;
+    case F_SMART_SECS:
+        if (!next_step(smart_steps, N_SMART_STEPS, v, dir, &n))
             return false;
         break;
     case F_NODEINFO_SECS:
@@ -642,61 +636,6 @@ static const char *fetch_note(void) {
     }
 }
 
-// "Modules on: MQTT, Range test", from the module config the node sent
-static const char *modules_on(void) {
-    static char buf[80];
-    static const struct {
-        pb_size_t tag;
-        const char *name;
-    } mods[] = {
-        {meshtastic_ModuleConfig_mqtt_tag, "MQTT"},
-        {meshtastic_ModuleConfig_serial_tag, "Serial"},
-        {meshtastic_ModuleConfig_external_notification_tag, "Ext notify"},
-        {meshtastic_ModuleConfig_store_forward_tag, "S&F"},
-        {meshtastic_ModuleConfig_range_test_tag, "Range test"},
-        {meshtastic_ModuleConfig_neighbor_info_tag, "Neighbors"},
-        {meshtastic_ModuleConfig_detection_sensor_tag, "Detection"},
-        {meshtastic_ModuleConfig_paxcounter_tag, "Paxcounter"},
-        {meshtastic_ModuleConfig_canned_message_tag, "Canned msgs"},
-    };
-    if (!mesh_db.module_have)
-        return NULL;
-    int n = snprintf(buf, sizeof buf, "Modules on:");
-    bool any = false;
-    for (size_t i = 0; i < sizeof mods / sizeof mods[0]; i++) {
-        const meshtastic_ModuleConfig *m = mesh_db_module(mods[i].tag);
-        if (!m)
-            continue;
-        bool on;
-        switch (mods[i].tag) {
-        case meshtastic_ModuleConfig_mqtt_tag: on = m->payload_variant.mqtt.enabled; break;
-        case meshtastic_ModuleConfig_serial_tag: on = m->payload_variant.serial.enabled; break;
-        case meshtastic_ModuleConfig_external_notification_tag:
-            on = m->payload_variant.external_notification.enabled;
-            break;
-        case meshtastic_ModuleConfig_store_forward_tag:
-            on = m->payload_variant.store_forward.enabled;
-            break;
-        case meshtastic_ModuleConfig_range_test_tag: on = m->payload_variant.range_test.enabled; break;
-        case meshtastic_ModuleConfig_neighbor_info_tag:
-            on = m->payload_variant.neighbor_info.enabled;
-            break;
-        case meshtastic_ModuleConfig_detection_sensor_tag:
-            on = m->payload_variant.detection_sensor.enabled;
-            break;
-        case meshtastic_ModuleConfig_paxcounter_tag: on = m->payload_variant.paxcounter.enabled; break;
-        default: on = m->payload_variant.canned_message.enabled; break;
-        }
-        if (on && n < (int)sizeof buf) {
-            n += snprintf(buf + n, sizeof buf - n, "%s %s", any ? "," : "", mods[i].name);
-            any = true;
-        }
-    }
-    if (!any)
-        snprintf(buf + n, sizeof buf - n, " none");
-    return buf;
-}
-
 static void add_node_fields(void) {
     add_field(F_LONG_NAME, 0);
     add_field(F_SHORT_NAME, 0);
@@ -705,7 +644,6 @@ static void add_node_fields(void) {
     add_field(F_REGION, 0);
     add_field(F_PRESET, 0);
     add_field(F_HOPS, 0);
-    add_field(F_TX_POWER, 0);
     add_field(F_TX_ENABLED, 0);
     for (int i = 0; i < MESH_MAX_CHANNELS; i++)
         if (mesh_edit_base.channels[i].role != meshtastic_Channel_Role_DISABLED)
@@ -713,7 +651,7 @@ static void add_node_fields(void) {
     add_field(F_GPS, 0);
     add_field(F_POS_SECS, 0);
     add_field(F_POS_SMART, 0);
-    add_field(F_FIXED, 0);
+    add_field(F_SMART_SECS, 0);
     add_field(F_POWER_SAVE, 0);
     add_field(F_BLUETOOTH, 0);
 }
@@ -730,27 +668,20 @@ static void build_ours(void) {
     mesh_link_conn_t c = mesh_link_conn();
     if (!mesh_edit_available()) {
         add(R_NOTE, 0, 0,
-            c == MESH_CONN_DESKTOP ? "Desktop mode has the node. Its settings show once"
-                                   : "The node's settings show here once it's connected.");
-        if (c == MESH_CONN_DESKTOP)
-            add(R_NOTE, 0, 0, "it hands the node back.");
+            c == MESH_CONN_DESKTOP ? "Desktop mode has the node." : "Not connected to the node.");
         return;
     }
     const char *r = edit_result();
     if (r)
         add_note(r);
     else if (c == MESH_CONN_DESKTOP)
-        add(R_NOTE, 0, 0, "Desktop mode has the node: look, don't touch.");
+        add(R_NOTE, 0, 0, "Desktop mode has the node: read only.");
     else if (c != MESH_CONN_UP)
         add(R_NOTE, 0, 0, "Not connected to the node: read only.");
     add_node_fields();
-    const char *mods = modules_on();
-    if (mods)
-        add_note(mods);
     const char *key = our_key();
     if (key) {
-        // For other nodes' admin keys, so this one can manage them
-        add(R_NOTE, 0, 0, "Public key (an admin key for nodes it manages):");
+        add(R_NOTE, 0, 0, "Public key:");
         add(R_NOTE, 0, 0, key);
     }
     add_write_rows();
@@ -767,14 +698,8 @@ static void build_remote(void) {
         add_note(f);
     else if (mesh_link_conn() != MESH_CONN_UP)
         add(R_NOTE, 0, 0, "Not connected to our node: read only.");
-    if (!mesh_edit_available()) {
-        if (!f && ra_state() != RA_BUSY) {
-            add_note("Its settings come over the mesh, a dozen or so packets. It needs our "
-                     "public key as an admin key.");
-        }
-    } else {
+    if (mesh_edit_available())
         add_node_fields();
-    }
     add_write_rows();
     if (!busy() && !mesh_edit_dirty()) {
         snprintf(fetch_label, sizeof fetch_label, "> Fetch %s's settings%s", target_name(),
@@ -983,8 +908,7 @@ static void wrap_text(const char *s, int x, int *y, int w, uint8_t c) {
     "! Region, preset, transmit and channel changes can cut it off from the "  \
     "rest of the mesh until the other nodes match."
 #define REMOTE_TEXT                                                            \
-    "They go over the mesh one message at a time. It saves them and "          \
-    "restarts, and then calcmesh reads them back."
+    "It saves them and restarts, then calcmesh reads them back."
 #define REMOTE_RISK_TEXT                                                       \
     "! It's remote. If it ends up on another region, preset or channel, or "   \
     "stops transmitting, nothing can reach it until someone gets to it."

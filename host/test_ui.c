@@ -290,6 +290,14 @@ static void test_settings_tab(void) {
     press(KBD_LEFT), press(KBD_LEFT), press(KBD_LEFT);
     CHECK(mesh_edit.device.node_info_broadcast_secs == 0);
     CHECK(mesh_edit_dirty() == MESH_EDIT_LORA);
+    // Smart interval, past 3 channels, GPS, interval, smart: default, then steps
+    press(KBD_HOME);
+    downs(15);
+    press(KBD_RIGHT);
+    CHECK(mesh_edit.position.broadcast_smart_minimum_interval_secs == 30);
+    CHECK(mesh_edit_dirty() == (MESH_EDIT_LORA | MESH_EDIT_POSITION));
+    press(KBD_LEFT);
+    CHECK(mesh_edit_dirty() == MESH_EDIT_LORA);
 
     // Text: Enter edits, Tab and F-keys stay in the field, Esc cancels
     press(KBD_HOME);
@@ -319,9 +327,9 @@ static void test_settings_tab(void) {
     ui_render();
 
     // Write: asks first; N doesn't write, Y does
-    // long, short, role, nodeinfo, region, preset, hops, tx power, transmit, 3 channels,
-    // gps, interval, smart, fixed, power saving, bluetooth, then Write
-    downs(18);
+    // long, short, role, nodeinfo, region, preset, hops, transmit, 3 channels,
+    // gps, interval, smart, smart interval, power saving, bluetooth, then Write
+    downs(17);
     press(KBD_ENTER);
     ui_render();
     press(KBD_F1); // the question holds the keys too
@@ -359,7 +367,7 @@ static void test_settings_tab(void) {
     press(KBD_RIGHT); // hop limit 3 -> 4
     CHECK(mesh_edit.lora.hop_limit == 4);
     press(KBD_HOME);
-    downs(19);
+    downs(18);
     press(KBD_ENTER);
     press('y');
     node_back();
@@ -380,7 +388,7 @@ static void test_settings_tab(void) {
 
     // calcmesh's own: change at once, and get saved
     press(KBD_HOME);
-    downs(19); // past Bluetooth: no Write row now
+    downs(18); // past Bluetooth: no Write row now
     int lcd = settings_get_int(SET_SCREEN_BACKLIGHT, -1);
     press(KBD_RIGHT);
     CHECK(settings_get_int(SET_SCREEN_BACKLIGHT, -1) == lcd + 16);
@@ -513,8 +521,8 @@ static void test_remote_tab(void) {
     downs(7);
     press(KBD_RIGHT);
     CHECK(mesh_edit.lora.hop_limit == 5);
-    // tx power, transmit, 2 channels, gps, interval, smart, fixed, power, bt
-    downs(11);
+    // transmit, 2 channels, gps, interval, smart, smart interval, power, bt
+    downs(10);
     press(KBD_ENTER);
     ui_render();
     press('y');
@@ -534,7 +542,7 @@ static void test_remote_tab(void) {
     press(KBD_HOME);
     downs(7);
     press(KBD_RIGHT);
-    downs(11);
+    downs(10);
     press(KBD_ENTER);
     press('y');
     remote_run();
