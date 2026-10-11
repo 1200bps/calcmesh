@@ -9,6 +9,9 @@
 
 static mesh_metrics_t table[MESH_METRICS_NODES];
 static int count;
+static met_add_cb on_add;
+
+void mesh_metrics_on_add(met_add_cb cb) { on_add = cb; }
 
 void mesh_metrics_clear(void) {
     memset(table, 0, sizeof table);
@@ -62,17 +65,25 @@ static met_point_t *last_point(mesh_metrics_t *e) {
     return e->nhist ? (met_point_t *)mesh_metrics_point(e, e->nhist - 1) : NULL;
 }
 
+// Whether the point has no numbers from this kind of packet yet
+static bool point_free(const met_point_t *p, met_kind_t kind) {
+    switch (kind) {
+    // (local stats may have put in channel use: device metrics replace it)
+    case MET_DEVICE: return !p->mv && p->batt == MET_NONE_U8;
+    case MET_ENV: return p->temp == MET_NONE_TEMP;
+    default: return p->online == MET_NONE_U16 && p->rxph == MET_NONE_U16 && !p->noise;
+    }
+}
+
 // The point to put this packet's numbers in: the last one if it's recent and
-// doesn't have them yet (device and environment packets come close together),
-// else a new one, at most every MESH_METRICS_GAP_S.
-static met_point_t *point_for(mesh_metrics_t *e, uint32_t time, bool temp) {
+// doesn't have them yet (device, environment and local stats packets come
+// close together), else a new one, at most every MESH_METRICS_GAP_S.
+static met_point_t *point_for(mesh_metrics_t *e, uint32_t time, met_kind_t kind) {
     if (!time)
         return NULL;
     met_point_t *p = last_point(e);
-    if (p && time >= p->time && time - p->time < MESH_METRICS_GAP_S) {
-        bool free = temp ? p->temp == MET_NONE_TEMP : p->chutil == MET_NONE_U8 && !p->mv;
-        return free ? p : NULL;
-    }
+    if (p && time >= p->time && time - p->time < MESH_METRICS_GAP_S)
+        return point_free(p, kind) ? p : NULL;
     if (p && time < p->time)
         return NULL; // the node's clock went back (a reboot without a fix): skip
     if (e->nhist == MESH_METRICS_HIST) {
@@ -84,6 +95,8 @@ static met_point_t *point_for(mesh_metrics_t *e, uint32_t time, bool temp) {
     p->mv = 0;
     p->batt = p->chutil = MET_NONE_U8;
     p->temp = MET_NONE_TEMP;
+    p->airtx = p->online = p->rxph = MET_NONE_U16;
+    p->noise = 0;
     return p;
 }
 
@@ -93,9 +106,15 @@ static uint8_t clamp_u8(float v, float max) {
     return (uint8_t)(v > max ? max : v + 0.5f);
 }
 
+static uint16_t clamp_u16(float v, float max) {
+    if (!(v >= 0))
+        return 0;
+    return (uint16_t)(v > max ? max : v + 0.5f);
+}
+
 static void add_device(mesh_metrics_t *e, uint32_t time) {
     const meshtastic_DeviceMetrics *d = &e->device;
-    met_point_t *p = point_for(e, time, false);
+    met_point_t *p = point_for(e, time, MET_DEVICE);
     if (p) {
         if (d->has_voltage && d->voltage > 0)
             p->mv = (uint16_t)(d->voltage > 65 ? 65000 : d->voltage * 1000 + 0.5f);
@@ -103,6 +122,8 @@ static void add_device(mesh_metrics_t *e, uint32_t time) {
             p->batt = clamp_u8((float)d->battery_level, 101);
         if (d->has_channel_utilization)
             p->chutil = clamp_u8(d->channel_utilization * 2, 200);
+        if (d->has_air_util_tx)
+            p->airtx = clamp_u16(d->air_util_tx * 100, 10000);
     }
     // Keep the Nodes tab's battery column current too
     mesh_node_t *n = mesh_db_find(e->num);
@@ -114,10 +135,33 @@ static void add_device(mesh_metrics_t *e, uint32_t time) {
 static void add_env(mesh_metrics_t *e, uint32_t time) {
     if (!e->env.has_temperature || !isfinite(e->env.temperature))
         return;
-    met_point_t *p = point_for(e, time, true);
+    met_point_t *p = point_for(e, time, MET_ENV);
     float t = e->env.temperature * 10;
     if (p && t > -3000 && t < 3000)
         p->temp = (int16_t)(t < 0 ? t - 0.5f : t + 0.5f);
+}
+
+// prev: the node's last local stats, if any, for the packet rate
+static void add_local(mesh_metrics_t *e, const meshtastic_LocalStats *prev, uint32_t time) {
+    const meshtastic_LocalStats *l = &e->local;
+    met_point_t *p = point_for(e, time, MET_LOCAL);
+    if (!p)
+        return;
+    p->online = (uint16_t)(l->num_online_nodes < 0xFFFE ? l->num_online_nodes : 0xFFFE);
+    if (l->noise_floor < 0)
+        p->noise = (int8_t)(l->noise_floor < -127 ? -127 : l->noise_floor);
+    // Its counters since the last ones; not across a reboot (they restart),
+    // nor over a few minutes, which says little
+    if (prev && l->uptime_seconds >= prev->uptime_seconds + 300 &&
+        l->num_packets_rx >= prev->num_packets_rx) {
+        uint64_t n = (uint64_t)(l->num_packets_rx - prev->num_packets_rx) * 3600 /
+                     (l->uptime_seconds - prev->uptime_seconds);
+        p->rxph = (uint16_t)(n < 0xFFFE ? n : 0xFFFE);
+    }
+    if (p->chutil == MET_NONE_U8)
+        p->chutil = clamp_u8(l->channel_utilization * 2, 200);
+    if (p->airtx == MET_NONE_U16)
+        p->airtx = clamp_u16(l->air_util_tx * 100, 10000);
 }
 
 mesh_metrics_t *mesh_metrics_add(uint32_t num, const meshtastic_Telemetry *t, uint32_t time) {
@@ -134,6 +178,7 @@ mesh_metrics_t *mesh_metrics_add(uint32_t num, const meshtastic_Telemetry *t, ui
     mesh_metrics_t *e = entry(num);
     // Our own node's clock can be unset until it hears one; keep the numbers
     // even so, with the time we know
+    bool had_local = e->have[MET_LOCAL];
     e->time[kind] = time;
     e->have[kind] = true;
     switch (kind) {
@@ -148,10 +193,15 @@ mesh_metrics_t *mesh_metrics_add(uint32_t num, const meshtastic_Telemetry *t, ui
     case MET_POWER:
         e->power = t->variant.power_metrics;
         break;
-    default:
+    default: {
+        meshtastic_LocalStats prev = e->local;
         e->local = t->variant.local_stats;
+        add_local(e, had_local ? &prev : NULL, time);
         break;
     }
+    }
+    if (on_add)
+        on_add(e, kind, time);
     return e;
 }
 
@@ -171,11 +221,16 @@ void mesh_metrics_nodeinfo(uint32_t num, const meshtastic_DeviceMetrics *dm, uin
 // --- requests -------------------------------------------------------------------
 
 static met_req_state_t req_state;
-static uint32_t req_node, req_id, req_ms;
+static uint32_t req_node, req_id, req_ms, req_wait, req_seq;
 static met_kind_t req_kind;
 static uint8_t req_error;
 
 bool mesh_metrics_request(uint32_t node, met_kind_t kind) {
+    return mesh_metrics_request_wait(
+        node, kind, node == mesh_db.my_node_num ? MET_REQ_LOCAL_MS : MET_REQ_REMOTE_MS);
+}
+
+bool mesh_metrics_request_wait(uint32_t node, met_kind_t kind, uint32_t wait_ms) {
     static const pb_size_t tags[MET_KINDS] = {
         [MET_DEVICE] = meshtastic_Telemetry_device_metrics_tag,
         [MET_ENV] = meshtastic_Telemetry_environment_metrics_tag,
@@ -187,6 +242,8 @@ bool mesh_metrics_request(uint32_t node, met_kind_t kind) {
     req_node = node;
     req_kind = kind;
     req_ms = mesh_link_ms();
+    req_wait = wait_ms;
+    req_seq++;
     if (!mesh_link_send_telemetry_req(node, tags[kind], &req_id)) {
         req_state = MET_REQ_FAILED;
         req_error = MET_ERR_NO_LINK;
@@ -200,8 +257,7 @@ bool mesh_metrics_request(uint32_t node, met_kind_t kind) {
 void mesh_metrics_poll(void) {
     if (req_state != MET_REQ_WAITING)
         return;
-    uint32_t limit = req_node == mesh_db.my_node_num ? MET_REQ_LOCAL_MS : MET_REQ_REMOTE_MS;
-    if (mesh_link_ms() - req_ms >= limit) {
+    if (mesh_link_ms() - req_ms >= req_wait) {
         req_state = MET_REQ_FAILED;
         req_error = MET_ERR_NO_ANSWER;
     }
@@ -227,6 +283,7 @@ uint32_t mesh_metrics_req_node(void) { return req_node; }
 met_kind_t mesh_metrics_req_kind(void) { return req_kind; }
 uint32_t mesh_metrics_req_age_ms(void) { return mesh_link_ms() - req_ms; }
 uint8_t mesh_metrics_req_error(void) { return req_error; }
+uint32_t mesh_metrics_req_seq(void) { return req_seq; }
 
 const char *mesh_metrics_kind_name(met_kind_t k) {
     static const char *const names[MET_KINDS] = {

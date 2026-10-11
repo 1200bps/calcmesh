@@ -39,6 +39,7 @@
 #define SET_KEY_ECHO "console.key_echo"         // print keypresses on the console
 #define SET_CHIME_DM "chime.dm"                 // Morse RR for a DM (on unless off)
 #define SET_CHIME_CHANNEL "chime.channel"       // Morse C for a channel message
+#define SET_METRICS_SCHED "metrics.sched"       // + 1-4: a metrics schedule (metsched.h)
 
 // NULL if unset.
 const char *settings_get(const char *key);
