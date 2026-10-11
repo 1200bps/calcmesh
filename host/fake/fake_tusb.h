@@ -11,3 +11,7 @@ extern uint32_t fake_cdc_len;
 
 // Take up to max bytes out of the transmit buffer, as the PC reading would.
 uint32_t fake_cdc_drain(uint8_t *out, uint32_t max);
+
+// What "the PC" has sent that the firmware hasn't read yet.
+extern uint8_t fake_cdc_rx[FAKE_CDC_BUFSIZE];
+extern uint32_t fake_cdc_rx_len;

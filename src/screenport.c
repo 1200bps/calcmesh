@@ -15,6 +15,13 @@ static bool frame_end;   // owe an 'E' once the dirty rows are out
 static bool palette_due; // owe a 'P'
 static bool open;
 
+// Keys from the PC: a partly read packet, then a queue for screenport_key().
+#define KEY_PKT (HDR + 1)
+static uint8_t rx[KEY_PKT];
+static int nrx;
+static kbd_event_t keys[16];
+static uint8_t key_head, key_count;
+
 static void mark(int y) {
     if (!(dirty[y >> 3] & (1 << (y & 7)))) {
         dirty[y >> 3] |= (uint8_t)(1 << (y & 7));
@@ -32,6 +39,36 @@ void screenport_rows(int y0, int y1, void *ctx) {
 }
 
 bool screenport_open(void) { return open; }
+
+bool screenport_key(kbd_event_t *ev) {
+    if (!key_count)
+        return false;
+    *ev = keys[key_head];
+    key_head = (uint8_t)((key_head + 1) % 16);
+    key_count--;
+    return true;
+}
+
+static void rx_byte(uint8_t b) {
+    // Resync on the magic byte; anything but a 'K' packet is dropped.
+    if (nrx == 0 && b != 0xFB)
+        return;
+    if (nrx == 1 && b != 'K') {
+        nrx = b == 0xFB;
+        return;
+    }
+    rx[nrx++] = b;
+    if (nrx < KEY_PKT)
+        return;
+    nrx = 0;
+    if (key_count == 16)
+        return; // nobody's reading them; drop
+    keys[(key_head + key_count++) % 16] = (kbd_event_t){
+        .key = (uint16_t)(rx[2] | rx[3] << 8),
+        .mods = rx[4] & (KBD_MOD_SHIFT | KBD_MOD_CTRL | KBD_MOD_ALT),
+        .repeat = rx[4] & 0x80,
+    };
+}
 
 static void header(uint8_t type, uint16_t arg) {
     uint8_t h[HDR] = {0xFB, type, (uint8_t)arg, (uint8_t)(arg >> 8)};
@@ -51,11 +88,16 @@ void screenport_task(void) {
         memset(dirty, 0, sizeof dirty);
         ndirty = 0;
         palette_due = frame_end = false;
+        nrx = key_count = 0;
     }
     open = now_open;
     if (!open)
         return;
-    tud_cdc_n_read_flush(CDC); // nothing to read yet
+    uint8_t in[64];
+    uint32_t n;
+    while ((n = tud_cdc_n_read(CDC, in, sizeof in)) > 0)
+        for (uint32_t i = 0; i < n; i++)
+            rx_byte(in[i]);
 
     bool sent = false;
     if (palette_due && tud_cdc_n_write_available(CDC) >= HDR + 12) {

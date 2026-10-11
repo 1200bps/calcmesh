@@ -200,9 +200,11 @@ extra packages) shows it:
     tools/screen.py -w $SCREEN live.png &    # keep a PNG current...
     feh -R 0.5 live.png                      # ...for any viewer that reloads
 
-Use the PicoCalc's own keyboard to drive it. Only changed rows are sent,
-nothing at all while the screen is still or the port is closed, and sending
-never holds up the rest of the firmware.
+Keys typed into the live window go to the PicoCalc as if from its own
+keyboard (Shift+F1..F5 are F6..F10, as there; keys the PicoCalc doesn't have
+are ignored), and its own keyboard keeps working too. Only changed rows are
+sent, nothing at all while the screen is still or the port is closed, and
+sending never holds up the rest of the firmware.
 
 A display driver only needs `fb_flush()`, which hands it the runs of rows
 that changed since the last flush, and `fb_row_rgb565()` (or `fb_palette`)
