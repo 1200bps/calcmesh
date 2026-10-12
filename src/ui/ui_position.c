@@ -4,7 +4,7 @@
 // fade with how long ago the node was heard. Two lines at the bottom show the
 // selected node's distance, bearing and last-heard (or the keys).
 //
-// Keys: arrows pan, + and - zoom, 0 or Home fits everyone back in, n/p (or
+// Keys: arrows pan, + and - zoom, 0 or Home fits everyone back in, ] and [ (or
 // PgDn/PgUp) pick the next/previous node outward from us, c centres on it,
 // Esc drops the pick, Enter opens a DM with it.
 
@@ -314,7 +314,7 @@ static void info(void) {
     char buf[64], a[16], b[24];
     int i = find_placed(v.sel);
     if (i < 0) {
-        ui_cells(0, y, UI_COLS, "arrows pan  +/- zoom  0 fit  n/p pick", FB_DIM, FB_CLEAR);
+        ui_cells(0, y, UI_COLS, "arrows pan  +/- zoom  0 fit  [ ] pick", FB_DIM, FB_CLEAR);
         const mesh_node_t *m = me();
         if (m)
             snprintf(buf, sizeof buf, "Here %.5f %.5f", m->latitude_i * 1e-7,
@@ -469,8 +469,8 @@ bool ui_position_key(const kbd_event_t *ev) {
     case '+': case '=': zoom(-1); return true;
     case '-': case '_': zoom(1); return true;
     case '0': case KBD_HOME: v.manual = false; return true;
-    case 'n': case KBD_PGDN: pick(1); return true;
-    case 'p': case KBD_PGUP: pick(-1); return true;
+    case ']': case KBD_PGDN: pick(1); return true;
+    case '[': case KBD_PGUP: pick(-1); return true;
     case 'c':
         if (i >= 0)
             centre_on(&mesh_db.nodes[placed[i]]);

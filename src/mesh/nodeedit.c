@@ -18,6 +18,7 @@ static mesh_edit_t sent; // what we wrote, to check against what comes back
 static uint32_t write_ms;
 static uint32_t write_syncs, write_errors;
 static bool resynced; // asked for the config ourselves already
+static bool reboot;   // what's RESTARTING is a plain reboot, not a write
 static uint32_t target; // 0: our own node
 static uint8_t error;
 
@@ -222,9 +223,34 @@ bool mesh_edit_write(void) {
     sent = mesh_edit;
     write_ms = mesh_link_ms();
     resynced = false;
+    reboot = false;
     state = MESH_EDIT_RESTARTING;
     return true;
 }
+
+bool mesh_edit_reboot(void) {
+    if (target || mesh_edit_dirty() || mesh_link_state() != MESH_LINK_READY || busy())
+        return false;
+    const mesh_link_stats_t *st = mesh_link_stats();
+    write_syncs = st->syncs;
+    write_errors = st->admin_errors;
+    memset(&admin, 0, sizeof admin);
+    admin.which_payload_variant = meshtastic_AdminMessage_reboot_seconds_tag;
+    admin.reboot_seconds = MESH_EDIT_REBOOT_SECS;
+    if (!mesh_link_send_admin(&admin))
+        return false;
+    printf("[edit] asked the node to reboot in %d s\n", MESH_EDIT_REBOOT_SECS);
+    // The same wait as after a write, with nothing to check afterwards
+    written = mismatch = 0;
+    sent = mesh_edit;
+    write_ms = mesh_link_ms();
+    resynced = false;
+    reboot = true;
+    state = MESH_EDIT_RESTARTING;
+    return true;
+}
+
+bool mesh_edit_rebooting(void) { return reboot; }
 
 // Errors that mean the node said no, as opposed to not answering
 static bool is_refusal(uint8_t e) {

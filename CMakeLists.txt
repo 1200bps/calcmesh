@@ -47,6 +47,7 @@ add_executable(calcmesh
     src/ui/ui_metrics.c
     src/ui/ui_settings.c
     src/sd/metlog.c
+    src/sd/metview.c
     src/sd/msglog.c
     src/sd/nodecache.c
     src/sd/settings.c

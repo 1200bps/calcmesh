@@ -19,10 +19,9 @@
 // node, kinds (d device, e environment, p power, l local stats) and minutes;
 // an empty value is a free slot.
 //
-// Telemetry from a scheduled node goes to the SD card log (metlog.h): every
-// answer to a request, and what other nodes send unasked (our own node's
-// minute-by-minute device metrics stay out), plus a line for each kind a
-// run got nothing for.
+// Telemetry goes to the SD card log (metlog.h): every answer to a request,
+// and what nodes send unasked (our own node's minute-by-minute reports one
+// per ten minutes), plus a line for each kind a run got nothing for.
 #pragma once
 
 #include <stdbool.h>

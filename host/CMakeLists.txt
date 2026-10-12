@@ -91,6 +91,7 @@ add_library(ui_fake STATIC ${UI_SRCS}
     ${REPO_ROOT}/src/mesh/metrics.c
     ${REPO_ROOT}/src/mesh/metsched.c
     ${REPO_ROOT}/src/sd/metlog.c
+    ${REPO_ROOT}/src/sd/metview.c
     ${REPO_ROOT}/src/sd/settings.c
     fake/fake_link.c
     fake/fake_sd.c
@@ -176,3 +177,9 @@ target_include_directories(test_nodecache PRIVATE ${REPO_ROOT}/src ${REPO_ROOT}/
 target_link_libraries(test_nodecache fatfs_host meshtastic_protos)
 target_compile_options(test_nodecache PRIVATE ${WARN})
 add_test(NAME nodecache COMMAND test_nodecache)
+
+# The graphs' history, read back from the metrics log
+add_executable(test_metview test_metview.c)
+target_link_libraries(test_metview ui_fake)
+target_compile_options(test_metview PRIVATE ${WARN})
+add_test(NAME metview COMMAND test_metview)

@@ -19,6 +19,7 @@ extern uint32_t fake_epoch;                 // what mesh_link_epoch() returns
 extern mesh_link_stats_t fake_link_stats;   // what mesh_link_stats() returns
 extern uint32_t fake_ms;                    // mesh_link_ms()
 extern int fake_admin_sent;                 // admin messages "sent"
+extern int fake_admin_last;                 // and the last one's payload tag
 // Remote admin: the fake remote node's settings, a routing error it answers
 // with instead (0: none), and messages sent to it. fake_remote_answer()
 // answers the one waiting; false if none is.
