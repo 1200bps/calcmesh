@@ -18,6 +18,10 @@
 #include "meshtastic/mesh.pb.h"
 #include "png.h"
 #include "metsched.h"
+#include "ff.h"
+#include "ramdisk.h"
+#include "sd/metlog.h"
+#include "sd/metview.h"
 #include "scene.h"
 #include "ui.h"
 
@@ -73,6 +77,10 @@ static int shot(const char *dir, const char *name) {
         snprintf(path, sizeof path, "%s/%s.png", dir, name);
     else
         snprintf(path, sizeof path, "%s", name);
+    // Anything the screen wants from the card, then the screen again
+    ui_render();
+    while (metview_pending())
+        metview_task();
     ui_render();
     if (!png_write_fb(path, scale)) {
         perror(path);
@@ -80,6 +88,68 @@ static int shot(const char *dir, const char *name) {
     }
     printf("%s\n", path);
     return 0;
+}
+
+// A card with a week of our node's metrics in the log, as metlog.c writes
+// it: the 18650 run down and charged, the channel busy in the evenings, a
+// night switched off.
+static uint32_t rnd_state = 12345;
+static float rnd(void) {
+    rnd_state = rnd_state * 1103515245u + 12345u;
+    return (float)(rnd_state >> 16 & 0x7fff) / 32768.0f;
+}
+
+static void card_week(void) {
+    static FATFS fs;
+    static BYTE work[FF_MAX_SS];
+    ramdisk_create(8u << 20);
+    MKFS_PARM opt = {.fmt = FM_FAT | FM_SFD};
+    if (f_mkfs("", &opt, work, sizeof work) != FR_OK || f_mount(&fs, "", 1) != FR_OK)
+        return;
+    metlog_set_online(true);
+    metview_set_online(true);
+    mesh_metrics_t e;
+    memset(&e, 0, sizeof e);
+    e.num = SCENE_ME;
+    float mv = 3.95f;
+    uint32_t up = 0, rx = 0;
+    for (uint32_t t = SCENE_NOW - 7 * 86400; t < SCENE_NOW - 8 * 3600; t += 600) {
+        uint32_t day = (SCENE_NOW - t) / 86400, hour = t % 86400 / 3600;
+        if (day == 4 && (hour >= 23 || hour < 7)) { // off overnight
+            up = rx = 0;
+            continue;
+        }
+        // Down 4 mV an hour on, charged up on the fifth day back and yesterday
+        bool charging = (day == 5 || day == 1) && hour >= 9 && hour < 13;
+        mv = charging ? mv + 0.03f : mv - 0.0006f;
+        mv = mv > 4.18f ? 4.18f : mv < 3.4f ? 3.4f : mv;
+        float eve = hour >= 17 && hour <= 23 ? 6 : 0;
+        meshtastic_DeviceMetrics *d = &e.device;
+        memset(d, 0, sizeof *d);
+        d->has_voltage = d->has_battery_level = d->has_channel_utilization = true;
+        d->has_air_util_tx = d->has_uptime_seconds = true;
+        d->voltage = mv + 0.01f * rnd();
+        d->battery_level = (uint32_t)((mv - 3.4f) / 0.78f * 100);
+        d->channel_utilization = 8 + eve + 4 * rnd() + (day == 1 ? 7 : 0); // tropo
+        d->air_util_tx = 0.6f + 0.5f * rnd();
+        d->uptime_seconds = up;
+        metlog_telemetry(&e, MET_DEVICE, t, false);
+        if (t % 3600 < 600) {
+            meshtastic_LocalStats *l = &e.local;
+            memset(l, 0, sizeof *l);
+            rx += (uint32_t)(60 + 8 * eve + 40 * rnd() + (day == 1 ? 120 : 0));
+            l->uptime_seconds = up;
+            l->num_packets_rx = rx;
+            l->num_online_nodes = (uint32_t)(12 + eve + 4 * rnd() + (day == 1 ? 14 : 0));
+            l->num_total_nodes = 40;
+            l->noise_floor = (int32_t)(-112 + 4 * rnd());
+            l->channel_utilization = d->channel_utilization;
+            metlog_telemetry(&e, MET_LOCAL, t, false);
+        }
+        while (metlog_pending())
+            metlog_flush();
+        up += 600;
+    }
 }
 
 static int tour(const char *dir) {
@@ -280,6 +350,19 @@ static int tour(const char *dir) {
     key("esc");
     err |= shot(dir, "44-metrics-sched-list");
     metsched_set(scene_node(0), 0, 0);
+
+    // A week of our own node in the log on the card, off for a night
+    card_week();
+    ui_set_now(SCENE_NOW);
+    key("home"), key("enter");
+    err |= shot(dir, "45-metrics-history-24h");
+    type("]]");
+    err |= shot(dir, "46-metrics-history-7d");
+    key("end");
+    err |= shot(dir, "47-metrics-history-7d-local");
+    type("[[[[");
+    key("home");
+    err |= shot(dir, "48-metrics-history-3h");
     return err;
 }
 

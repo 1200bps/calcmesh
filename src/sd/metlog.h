@@ -1,5 +1,6 @@
-// Metrics log on the SD card: telemetry from the nodes with a metrics
-// schedule (metsched.h), a file per node and kind:
+// Metrics log on the SD card: the telemetry we get from every node (see
+// metsched.h for what's left out), a file per node and kind, read back for
+// the graphs by metview.h:
 //
 //   /calcmesh/metrics/a1b2c3d4-device.tsv
 //   /calcmesh/metrics/a1b2c3d4-local.tsv     (and -env, -power)

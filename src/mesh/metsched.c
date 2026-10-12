@@ -315,15 +315,23 @@ void metsched_task(void) {
 
 // --- logging -------------------------------------------------------------------
 
+// Every node's telemetry goes to the log, for the graphs (metview.h) as well
+// as the schedules. Our own node hands us device metrics every minute and
+// local stats every so often: of those only what we asked for, and one of
+// each kind per MESH_METRICS_GAP_S, like the history in RAM.
 static void on_add(const mesh_metrics_t *e, met_kind_t kind, uint32_t time) {
-    if (!find(e->num))
-        return;
+    static uint32_t mine_logged[MET_KINDS];
     bool asked = mesh_metrics_req_state() == MET_REQ_WAITING && mesh_metrics_req_node() == e->num &&
                  mesh_metrics_req_kind() == kind;
-    // Our own node hands us device metrics every minute: only what we asked for
-    if (!asked && e->num == mesh_db.my_node_num)
-        return;
-    metlog_telemetry(e, kind, time ? time : mesh_link_epoch(), asked);
+    if (!time)
+        time = mesh_link_epoch();
+    if (!asked && e->num == mesh_db.my_node_num) {
+        uint32_t *last = &mine_logged[kind];
+        if (time >= *last && time - *last < MESH_METRICS_GAP_S)
+            return;
+        *last = time;
+    }
+    metlog_telemetry(e, kind, time, asked);
 }
 
 void metsched_init(void) {

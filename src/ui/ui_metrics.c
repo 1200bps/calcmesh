@@ -12,6 +12,10 @@
 // the air; asking another is one packet each way. Up/Down scroll, Left/Right
 // step through the list's nodes, Esc goes back to the list.
 //
+// The graphs cover the last 3h, 12h, 24h, 3d or 7d ([ and ] step through):
+// the metrics log on the SD card (metview.h), so a reboot keeps them, and
+// what's come since from the history in RAM.
+//
 // Below those, the node's metrics schedule (metsched.h). S
 // edits it: D E P L pick the kinds, Left/Right how often, Enter saves (none
 // picked: no schedule), Esc leaves it as it was. Scheduled nodes have a
@@ -27,6 +31,8 @@
 #include "link.h"
 #include "metrics.h"
 #include "metsched.h"
+#include "sd/metview.h"
+#include "sd/settings.h"
 #include "ui.h"
 #include "ui_internal.h"
 
@@ -106,25 +112,65 @@ static int sort(void) {
 
 // --- history -------------------------------------------------------------------
 
-typedef enum { S_MV, S_BATT, S_CHUTIL, S_TEMP, S_AIRTX, S_NOISE, S_ONLINE, S_RXPH } series_t;
+typedef mv_series_t series_t;
 
 static float value(const met_point_t *p, series_t s) {
     switch (s) {
-    case S_MV: return p->mv ? p->mv / 1000.0f : NAN;
-    case S_BATT: return p->batt <= 100 ? p->batt : NAN; // not "powered"
-    case S_CHUTIL: return p->chutil != MET_NONE_U8 ? p->chutil / 2.0f : NAN;
-    case S_AIRTX: return p->airtx != MET_NONE_U16 ? p->airtx / 100.0f : NAN;
-    case S_NOISE: return p->noise ? p->noise : NAN;
-    case S_ONLINE: return p->online != MET_NONE_U16 ? p->online : NAN;
-    case S_RXPH: return p->rxph != MET_NONE_U16 ? p->rxph : NAN;
+    case MV_MV: return p->mv ? p->mv / 1000.0f : NAN;
+    case MV_BATT: return p->batt <= 100 ? p->batt : NAN; // not "powered"
+    case MV_CHUTIL: return p->chutil != MET_NONE_U8 ? p->chutil / 2.0f : NAN;
+    case MV_AIRTX: return p->airtx != MET_NONE_U16 ? p->airtx / 100.0f : NAN;
+    case MV_NOISE: return p->noise ? p->noise : NAN;
+    case MV_ONLINE: return p->online != MET_NONE_U16 ? p->online : NAN;
+    case MV_RXPH: return p->rxph != MET_NONE_U16 ? p->rxph : NAN;
     default: return p->temp != MET_NONE_TEMP ? p->temp / 10.0f : NAN;
     }
 }
 
 // Smallest span a graph covers, so noise doesn't fill the box
-static const float min_span[] = {[S_MV] = 0.1f, [S_BATT] = 5,   [S_CHUTIL] = 2,
-                                 [S_TEMP] = 2,   [S_AIRTX] = 0.5f, [S_NOISE] = 4,
-                                 [S_ONLINE] = 2, [S_RXPH] = 10};
+static const float min_span[] = {[MV_MV] = 0.1f, [MV_BATT] = 5,   [MV_CHUTIL] = 2,
+                                 [MV_TEMP] = 2,   [MV_AIRTX] = 0.5f, [MV_NOISE] = 4,
+                                 [MV_ONLINE] = 2, [MV_RXPH] = 10};
+
+// A graph's points, oldest first
+typedef struct {
+    uint32_t t;
+    float v;
+} pt_t;
+
+static pt_t pts[METVIEW_BINS + MESH_METRICS_HIST];
+
+// Gather series s into pts: with card, the card's slots for the window
+// (metview.h), then the RAM history newer than what the card had, a mean
+// per slot seconds from from (0: each point as it is); only points from..to
+// (to 0: no limit). Returns how many.
+static int gather(const mesh_metrics_t *e, series_t s, bool card, uint32_t from, uint32_t to,
+                  uint32_t slot) {
+    int n = 0;
+    if (card)
+        for (int i = 0; i < METVIEW_BINS; i++) {
+            float v = metview_value(i, s);
+            if (!isnan(v))
+                pts[n++] = (pt_t){metview_time(i), v};
+        }
+    uint32_t after = card ? metview_newest() : 0;
+    int in_slot = 0; // points in the last one's mean
+    for (int i = 0; e && i < e->nhist; i++) {
+        const met_point_t *p = mesh_metrics_point(e, i);
+        float v = value(p, s);
+        if (isnan(v) || p->time < from || (to && p->time > to) || (card && p->time <= after))
+            continue;
+        if (slot && in_slot && (p->time - from) / slot == (pts[n - 1].t - from) / slot) {
+            pt_t *q = &pts[n - 1];
+            q->v = (q->v * (float)in_slot + v) / (float)(in_slot + 1);
+            in_slot++;
+            continue;
+        }
+        pts[n++] = (pt_t){p->time, v};
+        in_slot = 1;
+    }
+    return n;
+}
 
 typedef struct {
     int n;                // points with a value
@@ -133,21 +179,16 @@ typedef struct {
     uint32_t t0, t1;      // first and last point's time
 } range_t;
 
-static range_t range_of(const mesh_metrics_t *e, series_t s) {
-    range_t r = {0};
-    for (int i = 0; i < e->nhist; i++) {
-        const met_point_t *p = mesh_metrics_point(e, i);
-        float v = value(p, s);
-        if (isnan(v))
-            continue;
-        if (!r.n++) {
-            r.lo = r.hi = v;
-            r.t0 = p->time;
-        }
-        r.lo = v < r.lo ? v : r.lo;
-        r.hi = v > r.hi ? v : r.hi;
-        r.t1 = p->time;
+static range_t range_of(int n, series_t s) {
+    range_t r = {.n = n};
+    if (!n)
+        return r;
+    r.lo = r.hi = pts[0].v;
+    for (int i = 1; i < n; i++) {
+        r.lo = pts[i].v < r.lo ? pts[i].v : r.lo;
+        r.hi = pts[i].v > r.hi ? pts[i].v : r.hi;
     }
+    r.t0 = pts[0].t, r.t1 = pts[n - 1].t;
     r.min = r.lo, r.max = r.hi;
     if (r.max - r.min < min_span[s]) {
         float mid = (r.max + r.min) / 2;
@@ -157,26 +198,24 @@ static range_t range_of(const mesh_metrics_t *e, series_t s) {
     return r;
 }
 
-// The series as a line in the box, time along x. Points join up; one alone
-// is a dot.
-static void plot(int x, int y, int w, int h, const mesh_metrics_t *e, series_t s, uint8_t c) {
-    range_t r = range_of(e, s);
-    if (!r.n)
-        return;
-    uint32_t span = r.t1 - r.t0;
+// pts as a line in the box, t0..t1 along x. Points join up, unless more
+// than gap seconds apart (0: always); one alone is a dot.
+static void plot(int x, int y, int w, int h, const range_t *r, uint32_t t0, uint32_t t1,
+                 uint32_t gap, uint8_t c) {
+    uint32_t span = t1 - t0, pt = 0;
     int px = -1, py = -1;
-    for (int i = 0; i < e->nhist; i++) {
-        const met_point_t *p = mesh_metrics_point(e, i);
-        float v = value(p, s);
-        if (isnan(v))
+    for (int i = 0; i < r->n; i++) {
+        uint32_t t = pts[i].t;
+        if (t < t0 || t > t1)
             continue;
-        int xx = x + (span ? (int)((uint64_t)(p->time - r.t0) * (uint32_t)(w - 1) / span) : w - 1);
-        int yy = y + h - 1 - (int)lroundf((v - r.min) / (r.max - r.min) * (float)(h - 1));
-        if (px >= 0)
+        int xx = x + (span ? (int)((uint64_t)(t - t0) * (uint32_t)(w - 1) / span) : w - 1);
+        int yy = y + h - 1 -
+                 (int)lroundf((pts[i].v - r->min) / (r->max - r->min) * (float)(h - 1));
+        if (px >= 0 && (!gap || t - pt <= gap))
             fb_line(px, py, xx, yy, c);
         else
             fb_pixel(xx, yy, c);
-        px = xx, py = yy;
+        px = xx, py = yy, pt = t;
     }
 }
 
@@ -215,11 +254,12 @@ static void clock_mark(int x, int y, uint8_t c) {
     fb_pixel(x + 3, y + 2, c);
 }
 
+// The RAM history's battery voltage, as far back as it goes
 static void spark(int col, int y, const mesh_metrics_t *e, uint8_t c) {
-    range_t r = range_of(e, S_MV);
+    range_t r = range_of(gather(e, MV_MV, false, 0, 0, 0), MV_MV);
     if (r.n < 2)
         return;
-    plot(col * UI_CW, y + 2, W_SPARK * UI_CW - 2, UI_LH - 4, e, S_MV, c);
+    plot(col * UI_CW, y + 2, W_SPARK * UI_CW - 2, UI_LH - 4, &r, r.t0, r.t1, 0, c);
 }
 
 static void row(int y, const mesh_node_t *n, bool selected) {
@@ -386,28 +426,70 @@ static void heading(page_t *pg, const char *name, const mesh_metrics_t *e, met_k
     rule(pg, name, right);
 }
 
-// A titled graph of one series, if there are two points or more and they
-// aren't all the same
+// --- the graphs' window ----------------------------------------------------------
+
+// [ and ] step through these; the choice is kept in the settings
+static const uint32_t spans[METVIEW_NSPANS] = METVIEW_SPANS;
+static const char *const span_names[METVIEW_NSPANS] = {"3h", "12h", "24h", "3d", "7d"};
+// A dotted line down the graph every so far back from now
+static const uint32_t span_ticks[METVIEW_NSPANS] = {3600, 3 * 3600, 6 * 3600, 86400, 86400};
+#define SPAN_DEFAULT 2 // 24h
+
+static int span_i = -1;
+
+static int span_index(void) {
+    if (span_i < 0) {
+        int32_t h = settings_get_int(SET_METRICS_WINDOW, 24);
+        span_i = SPAN_DEFAULT;
+        for (int i = 0; i < METVIEW_NSPANS; i++)
+            if (spans[i] == (uint32_t)h * 3600)
+                span_i = i;
+    }
+    return span_i;
+}
+
+static void span_step(int d) {
+    int i = span_index() + d;
+    if (i < 0 || i >= METVIEW_NSPANS)
+        return;
+    span_i = i;
+    settings_set_int(SET_METRICS_WINDOW, (int32_t)(spans[i] / 3600));
+}
+
+// The page's graphs: the node, the window, and whether the card's history
+// for it is loaded
+static const mesh_metrics_t *page_e;
+static bool page_card;
+static uint32_t win_t0, win_t1;
+
+static void page_window(const mesh_metrics_t *e, uint32_t node) {
+    uint32_t span = spans[span_index()];
+    win_t1 = ui_now();
+    win_t0 = win_t1 > span ? win_t1 - span : 0;
+    metview_want(node, span, win_t1);
+    page_e = e;
+    page_card = metview_ready() && metview_node() == node;
+}
+
+static range_t page_range(series_t s) {
+    uint32_t slot = (win_t1 - win_t0) / METVIEW_BINS;
+    return range_of(gather(page_e, s, page_card, win_t0, win_t1, slot), s);
+}
+
+// A titled graph of one series over the window, if there are two points or
+// more and they aren't all the same
 #define GRAPH_H 30
 
-static void graph(page_t *pg, const mesh_metrics_t *e, series_t s, const char *name,
-                  const char *fmt, const char *unit) {
-    range_t r = range_of(e, s);
+static void graph(page_t *pg, series_t s, const char *name, const char *fmt, const char *unit) {
+    range_t r = page_range(s);
     if (r.n < 2 || r.lo == r.hi)
         return;
     end_pairs(pg);
-    char title[64], lo[12], hi[12], span[8];
+    char title[64], lo[12], hi[12];
     snprintf(lo, sizeof lo, fmt, (double)r.lo);
     snprintf(hi, sizeof hi, fmt, (double)r.hi);
-    // How far back it goes
-    uint32_t back = r.t1 - r.t0;
-    if (back >= 86400)
-        snprintf(span, sizeof span, "%ud", (unsigned)((back + 43200) / 86400));
-    else if (back >= 3600)
-        snprintf(span, sizeof span, "%uh", (unsigned)((back + 1800) / 3600));
-    else
-        snprintf(span, sizeof span, "%um", (unsigned)((back + 30) / 60));
-    snprintf(title, sizeof title, "%s %s to %s%s, last %s", name, lo, hi, unit, span);
+    snprintf(title, sizeof title, "%s %s to %s%s, last %s", name, lo, hi, unit,
+             span_names[span_index()]);
     ui_cells(C_L1, pg->y, UI_COLS - 2, title, FB_GREY, FB_CLEAR);
     pg->y += UI_LH + 1;
     int x = C_L1 * UI_CW, w = FB_W - 2 * x;
@@ -416,7 +498,16 @@ static void graph(page_t *pg, const mesh_metrics_t *e, series_t s, const char *n
     for (int i = 1; i < 4; i++)
         for (int xx = x + 2; xx < x + w - 2; xx += 4)
             fb_pixel(xx, pg->y + i * GRAPH_H / 4, FB_DIM);
-    plot(x + 2, pg->y + 2, w - 4, GRAPH_H - 4, e, s, FB_WHITE);
+    // ... and times: an hour ago, two hours ago... (a day each for 3d, 7d)
+    uint32_t span = win_t1 - win_t0, tick = span_ticks[span_index()];
+    for (uint32_t back = tick; back < span; back += tick) {
+        int xx = x + 2 + (int)((uint64_t)(span - back) * (uint32_t)(w - 5) / span);
+        for (int yy = pg->y + 2; yy < pg->y + GRAPH_H - 2; yy += 3)
+            fb_pixel(xx, yy, FB_DIM);
+    }
+    // Gaps (the node off, or out of range) stay gaps
+    uint32_t gap = span / (METVIEW_BINS / 4) > 3 * 3600 ? span / (METVIEW_BINS / 4) : 3 * 3600;
+    plot(x + 2, pg->y + 2, w - 4, GRAPH_H - 4, &r, win_t0, win_t1, gap, FB_WHITE);
     pg->y += GRAPH_H + 3;
 }
 
@@ -553,11 +644,7 @@ static bool sched_key(uint16_t k) {
     return true;
 }
 
-static void device_section(page_t *pg, const mesh_metrics_t *e) {
-    heading(pg, "Device", e, MET_DEVICE, 'D');
-    if (!e || !e->have[MET_DEVICE])
-        return;
-    const meshtastic_DeviceMetrics *d = &e->device;
+static void device_values(page_t *pg, const meshtastic_DeviceMetrics *d) {
     char buf[24];
     if (d->has_battery_level) {
         char b[8];
@@ -580,12 +667,19 @@ static void device_section(page_t *pg, const mesh_metrics_t *e) {
         snprintf(buf, sizeof buf, "%.2f%%", (double)d->air_util_tx);
         pair(pg, "Air TX", buf);
     }
-    if (range_of(e, S_MV).n >= 2)
-        graph(pg, e, S_MV, "Battery", "%.2f", " V");
+}
+
+static void device_section(page_t *pg, const mesh_metrics_t *e) {
+    heading(pg, "Device", e, MET_DEVICE, 'D');
+    if (e && e->have[MET_DEVICE])
+        device_values(pg, &e->device);
+    // (the card's history can be there with nothing heard since boot)
+    if (page_range(MV_MV).n >= 2)
+        graph(pg, MV_MV, "Battery", "%.2f", " V");
     else
-        graph(pg, e, S_BATT, "Battery", "%.0f", "%");
-    graph(pg, e, S_CHUTIL, "Ch util", "%.1f", "%");
-    graph(pg, e, S_AIRTX, "Air TX", "%.2f", "%");
+        graph(pg, MV_BATT, "Battery", "%.0f", "%");
+    graph(pg, MV_CHUTIL, "Ch util", "%.1f", "%");
+    graph(pg, MV_AIRTX, "Air TX", "%.2f", "%");
 }
 
 // Environment metrics: every float or integer the node said it has
@@ -600,11 +694,7 @@ typedef struct {
 #define EF(f, lbl, fmt) {lbl, offsetof(EM, has_##f), offsetof(EM, f), 0, fmt}
 #define EU(f, lbl, fmt) {lbl, offsetof(EM, has_##f), offsetof(EM, f), sizeof(((EM *)0)->f), fmt}
 
-static void env_section(page_t *pg, const mesh_metrics_t *e) {
-    heading(pg, "Environment", e, MET_ENV, 'E');
-    if (!e || !e->have[MET_ENV])
-        return;
-    const meshtastic_EnvironmentMetrics *v = &e->env;
+static void env_values(page_t *pg, const meshtastic_EnvironmentMetrics *v) {
     char buf[24];
     static const env_field_t fields[] = {
         EF(temperature, "Temp", "%.1f°C"),
@@ -648,7 +738,13 @@ static void env_section(page_t *pg, const mesh_metrics_t *e) {
         }
         pair(pg, f->label, buf);
     }
-    graph(pg, e, S_TEMP, "Temp", "%.1f", "°C");
+}
+
+static void env_section(page_t *pg, const mesh_metrics_t *e) {
+    heading(pg, "Environment", e, MET_ENV, 'E');
+    if (e && e->have[MET_ENV])
+        env_values(pg, &e->env);
+    graph(pg, MV_TEMP, "Temp", "%.1f", "°C");
 }
 
 static void power_section(page_t *pg, const mesh_metrics_t *e) {
@@ -679,11 +775,7 @@ static void power_section(page_t *pg, const mesh_metrics_t *e) {
     }
 }
 
-static void local_section(page_t *pg, const mesh_metrics_t *e) {
-    heading(pg, "Local stats", e, MET_LOCAL, 'L');
-    if (!e || !e->have[MET_LOCAL])
-        return;
-    const meshtastic_LocalStats *l = &e->local;
+static void local_values(page_t *pg, const meshtastic_LocalStats *l) {
     char buf[24];
 #define U(label, v)                                                            \
     do {                                                                       \
@@ -715,10 +807,16 @@ static void local_section(page_t *pg, const mesh_metrics_t *e) {
         pair(pg, "Heap free", buf);
     }
 #undef U
+}
+
+static void local_section(page_t *pg, const mesh_metrics_t *e) {
+    heading(pg, "Local stats", e, MET_LOCAL, 'L');
+    if (e && e->have[MET_LOCAL])
+        local_values(pg, &e->local);
     end_pairs(pg);
-    graph(pg, e, S_RXPH, "Heard", "%.0f", "/h");
-    graph(pg, e, S_ONLINE, "Online", "%.0f", " nodes");
-    graph(pg, e, S_NOISE, "Noise", "%.0f", " dBm");
+    graph(pg, MV_RXPH, "Heard", "%.0f", "/h");
+    graph(pg, MV_ONLINE, "Online", "%.0f", " nodes");
+    graph(pg, MV_NOISE, "Noise", "%.0f", " dBm");
 }
 
 static void fix_scroll(void) {
@@ -751,6 +849,7 @@ static void draw_detail(void) {
     // The page, scrolled. Its height is only known once drawn, and new
     // metrics change it, so a scroll past the end is pulled back and drawn
     // again.
+    page_window(e, n->num);
     fb_clip(0, D_TOP, FB_W, D_H);
     for (int pass = 0; pass < 2; pass++) {
         page_t pg = {.y = D_TOP - scroll};
@@ -777,12 +876,15 @@ static void draw_detail(void) {
 
     fb_hline(0, HINT_Y - 1, FB_W, FB_DIM);
     const char *st = editing ? NULL : sched_msg ? sched_msg : req_text(n->num);
+    char hint[64];
+    snprintf(hint, sizeof hint, "D E P L: ask  S: schedule  [ ]: %s  Esc: list",
+             span_names[span_index()]);
     if (st)
         ui_cells(0, HINT_Y, UI_COLS, st, FB_WHITE, FB_CLEAR);
     else
         ui_cells(0, HINT_Y, UI_COLS,
                  editing ? "D E P L: pick  Left/Right: how often  Enter: save"
-                         : "D E P L: ask  S: schedule  Esc: list",
+                         : hint,
                  FB_DIM, FB_CLEAR);
 }
 
@@ -796,6 +898,8 @@ static bool detail_key(const kbd_event_t *ev) {
         return sched_key(k);
     switch (k) {
     case 's': sched_key_start(sel_num); return true;
+    case '[': span_step(-1); return true;
+    case ']': span_step(1); return true;
     case 'd': return ask(sel_num, MET_DEVICE);
     case 'e': return ask(sel_num, MET_ENV);
     case 'p': return ask(sel_num, MET_POWER);

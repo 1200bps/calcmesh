@@ -40,6 +40,7 @@
 #define SET_CHIME_DM "chime.dm"                 // Morse RR for a DM (on unless off)
 #define SET_CHIME_CHANNEL "chime.channel"       // Morse C for a channel message
 #define SET_METRICS_SCHED "metrics.sched"       // + 1-4: a metrics schedule (metsched.h)
+#define SET_METRICS_WINDOW "ui.metrics.window"  // hours the Metrics graphs cover
 
 // NULL if unset.
 const char *settings_get(const char *key);
