@@ -185,3 +185,21 @@ bool mesh_link_send_telemetry_req(uint32_t to, pb_size_t variant, uint32_t *id) 
         *id = fake_tel_id;
     return true;
 }
+
+// NodeInfo requests: who was asked last, and when (fake_ms)
+uint32_t fake_nodeinfo_to;
+int fake_nodeinfo_sent;
+static uint32_t nodeinfo_ms;
+
+bool mesh_link_send_nodeinfo_req(uint32_t to) {
+    if (fake_link_state != MESH_LINK_READY || !to || to == mesh_db.my_node_num)
+        return false;
+    fake_nodeinfo_to = to;
+    nodeinfo_ms = fake_ms;
+    fake_nodeinfo_sent++;
+    return true;
+}
+
+uint32_t mesh_link_nodeinfo_asked(uint32_t node) {
+    return node && node == fake_nodeinfo_to ? (nodeinfo_ms ? nodeinfo_ms : 1) : 0;
+}

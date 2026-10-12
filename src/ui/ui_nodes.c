@@ -1,9 +1,12 @@
 // Nodes tab: everyone in mesh_db, our own node first, then favourites, then
-// most recently heard. Enter opens a DM with the selected node.
+// most recently heard. Enter opens a DM with the selected node; i asks it for
+// its NodeInfo. Nodes our node no longer lists (kept from earlier, or from the
+// SD card) are drawn grey.
 
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "link.h"
 #include "ui.h"
 #include "ui_internal.h"
 
@@ -22,6 +25,7 @@
 static ui_list_t list;
 static uint32_t sel_num; // keeps the selection on the same node across resorts
 static uint16_t order[MESH_MAX_NODES];
+static char notice[64]; // until the next key
 
 static int rank(const mesh_node_t *n) {
     if (n->num == mesh_db.my_node_num)
@@ -61,6 +65,8 @@ static void row(int y, const mesh_node_t *n, bool selected) {
     uint8_t fg = selected ? FB_BLACK : FB_WHITE;
     uint8_t dim = selected ? FB_BLACK : FB_GREY;
     bool me = n->num == mesh_db.my_node_num;
+    if (n->cached && !selected)
+        fg = FB_GREY;
     char buf[16];
 
     if (selected)
@@ -121,12 +127,34 @@ void ui_nodes_draw(void) {
         fb_vline(FB_W - 2, top, h, FB_DIM);
         fb_fill(FB_W - 3, by, 3, bh < 4 ? 4 : bh, FB_WHITE);
     }
+
+    if (notice[0]) {
+        int ny = UI_BODY_Y + UI_BODY_H - UI_LH;
+        fb_fill(0, ny - 2, FB_W, UI_LH + 2, FB_BLACK);
+        fb_hline(0, ny - 2, FB_W, FB_DIM);
+        ui_cells(1, ny, UI_COLS - 2, notice, FB_WHITE, FB_CLEAR);
+    }
+}
+
+// i: ask the selected node for its NodeInfo (name and key; without its
+// key our node won't send it DMs or metrics requests)
+static void ask_nodeinfo(void) {
+    const mesh_node_t *n = mesh_db_find(sel_num);
+    if (!n || sel_num == mesh_db.my_node_num)
+        return;
+    if (mesh_link_send_nodeinfo_req(sel_num))
+        snprintf(notice, sizeof notice, "Asked %s for its NodeInfo%s", ui_node_short(sel_num),
+                 n->has_key ? "." : "; no key for it yet.");
+    else
+        snprintf(notice, sizeof notice, "Can't ask: not connected to our node.");
 }
 
 bool ui_nodes_key(const kbd_event_t *ev) {
+    bool had_notice = notice[0];
+    notice[0] = '\0';
     int n = sort();
     if (!n)
-        return false;
+        return had_notice;
     if (ui_list_key(&list, n, ROWS, ev->key)) {
         sel_num = mesh_db.nodes[order[list.sel]].num;
         return true;
@@ -135,5 +163,9 @@ bool ui_nodes_key(const kbd_event_t *ev) {
         ui_chats_open(MESH_CONV_DM(sel_num));
         return true;
     }
-    return false;
+    if (ev->key == 'i' || ev->key == 'I') {
+        ask_nodeinfo();
+        return true;
+    }
+    return had_notice;
 }

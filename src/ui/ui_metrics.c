@@ -313,6 +313,17 @@ static const char *req_text(uint32_t node) {
     case meshtastic_Routing_Error_DUTY_CYCLE_LIMIT:
         snprintf(buf, sizeof buf, "Duty cycle limit: try again later.");
         break;
+    case meshtastic_Routing_Error_PKI_SEND_FAIL_PUBLIC_KEY:
+    case meshtastic_Routing_Error_PKI_FAILED:
+        // Our node won't send to it without its key (link.h)
+        snprintf(buf, sizeof buf, mesh_link_nodeinfo_asked(node)
+                                      ? "No key for %s yet; asked it for its NodeInfo."
+                                      : "No key for %s yet; it needs to send NodeInfo.",
+                 who);
+        break;
+    case meshtastic_Routing_Error_PKI_UNKNOWN_PUBKEY:
+        snprintf(buf, sizeof buf, "%s doesn't have our key; sent it our NodeInfo.", who);
+        break;
     default:
         snprintf(buf, sizeof buf, "%s refused: routing error %u.", who,
                  (unsigned)mesh_metrics_req_error());

@@ -10,6 +10,7 @@
 #include "mesh/msgs.h"
 #include "sd/metlog.h"
 #include "sd/msglog.h"
+#include "sd/nodecache.h"
 #include "sd/settings.h"
 
 #define POLL_MS 100
@@ -26,6 +27,7 @@ static absolute_time_t next_poll, next_retry;
 static bool error_reported;
 static bool channels_synced; // msglog knows the node's channel table
 static absolute_time_t settings_retry;
+static bool nodes_loaded; // the saved node list is in mesh_db
 
 static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
 
@@ -43,6 +45,7 @@ static const char *fs_name(void) {
 
 static void unmount(void) {
     metlog_set_online(false);
+    nodecache_close();
     msglog_close();
     f_unmount("");
     sd_card_eject();
@@ -56,6 +59,7 @@ static bool mount(bool restore) {
         if (sr != FR_OK)
             printf("[sd] can't read " SETTINGS_PATH " (FatFs error %d)\n", sr);
         channels_synced = false;
+        nodes_loaded = false;
         int n = msglog_open(restore);
         if (n >= 0) {
             printf("[sd] %s card, %s", sd_card_type(), fs_name());
@@ -85,6 +89,7 @@ static bool mount(bool restore) {
 
 void sd_init(void) {
     settings_set_clock(now_ms);
+    nodecache_set_clock(now_ms);
     sd_card_pins_init();
     gpio_init(SD_DET_PIN);
     gpio_set_dir(SD_DET_PIN, GPIO_IN);
@@ -155,9 +160,21 @@ void sd_task(void) {
         }
     }
 
+    // Not at mount: the link clears mesh_db when it starts, after sd_init()
+    if (!nodes_loaded) {
+        nodes_loaded = true;
+        int n = nodecache_load();
+        if (n < 0)
+            goto card_error;
+        if (n)
+            printf("[sd] %d nodes restored from " NODECACHE_PATH "\n", n);
+    }
+
     if (msglog_pending() && msglog_flush() < 0)
         goto card_error;
     if (metlog_pending() && metlog_flush() < 0)
+        goto card_error;
+    if (nodecache_pending() && nodecache_flush() < 0)
         goto card_error;
     return;
 
@@ -187,4 +204,7 @@ void sd_print_status(void) {
     const metlog_stats_t *m = metlog_stats();
     printf("metrics log: %lu lines written, %lu not saved, %lu errors\n",
            (unsigned long)m->written, (unsigned long)m->dropped, (unsigned long)m->errors);
+    const nodecache_stats_t *c = nodecache_stats();
+    printf("node list: %lu restored, saved %lu times, %lu errors\n", (unsigned long)c->restored,
+           (unsigned long)c->saves, (unsigned long)c->errors);
 }

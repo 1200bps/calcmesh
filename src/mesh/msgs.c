@@ -324,9 +324,10 @@ static const char *routing_error_name(uint8_t e) {
     case meshtastic_Routing_Error_RATE_LIMIT_EXCEEDED:
         return "rate limited";
     case meshtastic_Routing_Error_PKI_FAILED:
-    case meshtastic_Routing_Error_PKI_UNKNOWN_PUBKEY:
     case meshtastic_Routing_Error_PKI_SEND_FAIL_PUBLIC_KEY:
         return "no key for node";
+    case meshtastic_Routing_Error_PKI_UNKNOWN_PUBKEY:
+        return "node lacks our key";
     default:
         return "error";
     }

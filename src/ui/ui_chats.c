@@ -225,6 +225,35 @@ static void draw_compose(int y) {
     ui_cells(cx, cy, 1, under, FB_BLACK, FB_WHITE);
 }
 
+// A DM whose latest message failed for want of a key: say what's going on,
+// since "failed" alone looks like a radio problem (link.h).
+static const char *key_hint(void) {
+    if (!conv.peer)
+        return NULL;
+    for (int i = 0; i < mesh_msgs_count(conv); i++) {
+        const mesh_msg_t *m = mesh_msgs_recent(conv, i);
+        if (m->status == MESH_MSG_RECEIVED)
+            continue;
+        if (m->status != MESH_MSG_FAILED)
+            return NULL;
+        const char *who = ui_node_short(conv.peer);
+        switch (m->error) {
+        case meshtastic_Routing_Error_PKI_SEND_FAIL_PUBLIC_KEY:
+        case meshtastic_Routing_Error_PKI_FAILED:
+            snprintf(notice_buf, sizeof notice_buf, "No key for %s yet; %s", who,
+                     mesh_link_nodeinfo_asked(conv.peer) ? "asked it for NodeInfo"
+                                                        : "needs its NodeInfo");
+            return notice_buf;
+        case meshtastic_Routing_Error_PKI_UNKNOWN_PUBKEY:
+            snprintf(notice_buf, sizeof notice_buf, "%s lacks our key; sent it ours", who);
+            return notice_buf;
+        default:
+            return NULL;
+        }
+    }
+    return NULL;
+}
+
 static void draw_conv(void) {
     char title[64];
     int y = UI_BODY_Y + 1;
@@ -236,7 +265,11 @@ static void draw_conv(void) {
 
     int compose_h = draft_lines() * UI_LH + 3;
     int bottom = UI_BODY_Y + UI_BODY_H - compose_h; // compose rule
-    int area = bottom - y - 1;
+    // A key hint stays up, so the messages make room for it rather than
+    // being written over
+    const char *hint = notice ? NULL : key_hint();
+    int msgs_end = hint ? bottom - UI_LH / 2 - 1 : bottom;
+    int area = msgs_end - y - 1;
     int rows = area / UI_LH;
 
     int n = mesh_msgs_count(conv);
@@ -250,11 +283,11 @@ static void draw_conv(void) {
 
     // Newest at the bottom; lay out upwards, clipped to the message area
     fb_clip(0, y, FB_W, area);
-    int line_y = bottom - 1 + scroll * UI_LH;
+    int line_y = msgs_end - 1 + scroll * UI_LH;
     for (int i = 0; i < n && line_y > y; i++) {
         const mesh_msg_t *m = mesh_msgs_recent(conv, i);
         line_y -= line_count(m->text) * UI_LH;
-        if (line_y < bottom)
+        if (line_y < msgs_end)
             draw_message(m, line_y);
     }
     if (!n)
@@ -268,7 +301,12 @@ static void draw_conv(void) {
     }
     fb_clip(0, UI_BODY_Y, FB_W, UI_BODY_H);
 
+    // Only while nothing else is being said; it isn't kept
+    if (hint)
+        notice = hint;
     draw_compose(bottom);
+    if (hint)
+        notice = NULL;
     if (unread(conv))
         mesh_msgs_mark_read(conv);
 }

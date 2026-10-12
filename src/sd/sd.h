@@ -1,5 +1,6 @@
 // The PicoCalc's microSD card: mounting, card detect, and what's kept on it:
-// the message history (msglog.h) and calcmesh's settings (settings.h).
+// the message history (msglog.h), calcmesh's settings (settings.h), the
+// metrics log (metlog.h) and the node list (nodecache.h).
 // Without a card everything carries on in RAM.
 //
 // main() calls sd_init() once, before the main loop starts handling the

@@ -32,6 +32,9 @@ bool fake_remote_answer(void);
 extern uint32_t fake_tel_to, fake_tel_id;
 extern pb_size_t fake_tel_variant;
 extern int fake_tel_sent;
+// NodeInfo requests: the last node asked, and how many
+extern uint32_t fake_nodeinfo_to;
+extern int fake_nodeinfo_sent;
 bool scene_telemetry_answer(int error);
 extern int fake_sd_state;                   // sd_state(): sd_state_t
 
