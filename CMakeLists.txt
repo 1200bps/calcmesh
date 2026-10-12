@@ -27,6 +27,7 @@ add_executable(calcmesh
     src/lcd/lcd.c
     src/meshlink.c
     src/screenport.c
+    src/usbdiag.c
     src/mesh/frame.c
     src/mesh/link.c
     src/mesh/msgs.c

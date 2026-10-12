@@ -24,6 +24,7 @@
 #include "mesh/nodeedit.h"
 #include "meshlink.h"
 #include "screenport.h"
+#include "usbdiag.h"
 #include "sd/sd.h"
 #include "sd/settings.h"
 #include "ui/fb.h"
@@ -182,6 +183,8 @@ static void run_command(char *line) {
             }
         }
         metsched_print();
+    } else if (strcmp(cmd, "usbdiag") == 0) {
+        usbdiag_print(arg ? atoi(arg) : 0);
     } else if (strcmp(cmd, "version") == 0) {
         printf("calcmesh %s\n", CALCMESH_VERSION);
     } else if (strcmp(cmd, "help") == 0) {
@@ -305,6 +308,8 @@ int main(void) {
         kbd_task();
         backlight_task();
         sd_task();
+        usbdiag_loop();
+        usbdiag_task();
         apply_settings();
         chime_task();
         mesh_edit_poll();
