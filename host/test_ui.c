@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "mesh/nodeedit.h"
+#include "meshtastic/admin.pb.h"
 #include "mesh/remoteadmin.h"
 #include "metrics.h"
 #include "msgs.h"
@@ -13,6 +14,7 @@
 #include "nodedb.h"
 #include "scene.h"
 #include "ui.h"
+#include "ui_internal.h"
 
 static int failures;
 #define CHECK(cond)                                                            \
@@ -386,9 +388,29 @@ static void test_settings_tab(void) {
     ui_render();
     fake_link_state = MESH_LINK_READY;
 
+    // Reboot: last of our node's rows, asks first
+    press(KBD_HOME);
+    downs(18);
+    press(KBD_ENTER);
+    CHECK(ui_settings_modal());
+    ui_render();
+    press('n');
+    CHECK(!ui_settings_modal());
+    CHECK(fake_admin_sent == 0);
+    press(KBD_ENTER);
+    press('y');
+    CHECK(fake_admin_sent == 1);
+    CHECK(fake_admin_last == meshtastic_AdminMessage_reboot_seconds_tag);
+    CHECK(mesh_edit_state() == MESH_EDIT_RESTARTING && mesh_edit_rebooting());
+    ui_render();
+    node_back();
+    CHECK(mesh_edit_state() == MESH_EDIT_DONE);
+    ui_render();
+    fake_admin_sent = 0;
+
     // calcmesh's own: change at once, and get saved
     press(KBD_HOME);
-    downs(18); // past Bluetooth: no Write row now
+    downs(19); // past Bluetooth and Reboot: no Write row now
     int lcd = settings_get_int(SET_SCREEN_BACKLIGHT, -1);
     press(KBD_RIGHT);
     CHECK(settings_get_int(SET_SCREEN_BACKLIGHT, -1) == lcd + 16);
@@ -439,12 +461,12 @@ static void test_position(void) {
     // Our own node, a hollow square, sits somewhere on the map
     CHECK(count_shade(0, 15, FB_W, 260, FB_WHITE) > 50);
 
-    // n picks outward from us: ourselves first (Enter does nothing), then
+    // ] picks outward from us: ourselves first (Enter does nothing), then
     // the nearest, Basement Lab, 220 m off; Enter opens a DM with it
-    press('n');
+    press(']');
     press(KBD_ENTER);
     CHECK(ui_tab() == UI_TAB_POSITION);
-    press('n');
+    press(']');
     press(KBD_ENTER);
     CHECK(ui_tab() == UI_TAB_CHATS);
     type("map");

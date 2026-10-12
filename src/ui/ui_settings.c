@@ -10,7 +10,8 @@
 // when asked for, since that's a dozen or so packets on air.
 //
 // Up/Down pick a field, Left/Right step its value, Enter edits text (or
-// toggles a switch, or runs an action).
+// toggles a switch, or runs an action). Our own node's section ends with
+// "Reboot the node", which asks first.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,6 +71,7 @@ typedef enum {
     A_WRITE,
     A_DISCARD,
     A_FETCH,  // another node: ask it for its settings
+    A_REBOOT, // our node: restart it
     F_TARGET, // whose settings: Enter picks a node
 } field_t;
 
@@ -98,8 +100,8 @@ static int sel_field = -1, sel_arg; // keeps the selection across rebuilds
 static bool editing;
 static char edit_buf[48];
 static int edit_max, edit_cursor;
-// The write confirmation
-static bool confirming;
+// The write confirmation, and the reboot one
+static bool confirming, confirming_reboot;
 static const char *notice;
 // Picking whose settings: our node first, then favorites, then the rest
 // (only nodes whose key we have, as remote admin needs it)
@@ -194,6 +196,7 @@ static kind_t kind_of(int f) {
     case A_WRITE:
     case A_DISCARD:
     case A_FETCH:
+    case A_REBOOT:
     case F_TARGET:
         return K_ACTION;
     default:
@@ -562,13 +565,16 @@ static const char *edit_result(void) {
     switch (mesh_edit_state()) {
     case MESH_EDIT_RESTARTING:
         if (!remote)
-            return "Written. Waiting for the node to restart...";
+            return mesh_edit_rebooting() ? "Rebooting. Waiting for the node..."
+                                         : "Written. Waiting for the node to restart...";
         snprintf(buf, sizeof buf,
                  ra_written() ? "Written. Waiting for %s, then reading back (%d/%d)..."
                               : "Writing to %s over the mesh (%d/%d)...",
                  who, ra_done() + 1, ra_total());
         return buf;
     case MESH_EDIT_DONE:
+        if (!remote && mesh_edit_rebooting())
+            return "The node rebooted and is back.";
         snprintf(buf, sizeof buf, "%s restarted and confirms the changes.", remote ? who : "The node");
         return buf;
     case MESH_EDIT_MISMATCH: {
@@ -590,7 +596,8 @@ static const char *edit_result(void) {
                  error_text(mesh_edit_error()));
         return buf;
     case MESH_EDIT_REFUSED:
-        snprintf(buf, sizeof buf, "%s refused the change: %s.", remote ? who : "The node",
+        snprintf(buf, sizeof buf, "%s refused the %s: %s.", remote ? who : "The node",
+                 !remote && mesh_edit_rebooting() ? "reboot" : "change",
                  error_text(mesh_edit_error()));
         return buf;
     default: return NULL;
@@ -685,6 +692,8 @@ static void build_ours(void) {
         add(R_NOTE, 0, 0, key);
     }
     add_write_rows();
+    if (c == MESH_CONN_UP && !busy() && !mesh_edit_dirty())
+        add(R_FIELD, A_REBOOT, 0, NULL);
 }
 
 // Another node: only what we've fetched from it
@@ -772,7 +781,7 @@ static void move(int dir) {
 bool ui_settings_pending(void) {
     return mesh_edit_state() != MESH_EDIT_RESTARTING && mesh_edit_dirty() != 0;
 }
-bool ui_settings_modal(void) { return editing || confirming || picking; }
+bool ui_settings_modal(void) { return editing || confirming || confirming_reboot || picking; }
 
 // --- drawing -------------------------------------------------------------------
 
@@ -802,6 +811,10 @@ static void draw_row(const row_t *r, int y, bool selected) {
     }
     if (f == A_FETCH) {
         ui_cells(C_LABEL, y, UI_COLS - C_LABEL, r->text, fg, FB_CLEAR);
+        return;
+    }
+    if (f == A_REBOOT) {
+        ui_cells(C_LABEL, y, UI_COLS - C_LABEL, "> Reboot the node", fg, FB_CLEAR);
         return;
     }
     if (f == A_WRITE || f == A_DISCARD) {
@@ -873,6 +886,7 @@ static const char *hint(void) {
         case A_WRITE: return "Enter: review and write";
         case A_DISCARD: return "Enter: back to the node's values";
         case A_FETCH: return "Enter: ask it over the mesh";
+        case A_REBOOT: return "Enter: reboot (asks first)";
         default: return "Enter: pick a node";
         }
     default: return "Left/Right: change";
@@ -954,6 +968,28 @@ static void draw_confirm(void) {
         wrap_text(risk, 2, &y, UI_COLS - 4, FB_WHITE);
     y += UI_LH / 2;
     ui_cells(2, y, UI_COLS - 4, "Y: write    N or Esc: not now", FB_WHITE, FB_CLEAR);
+}
+
+#define REBOOT_TEXT "It drops off the mesh for a moment; calcmesh reconnects."
+
+static void draw_confirm_reboot(void) {
+    int x0 = 2, w = FB_W - 4;
+    int y0 = UI_BODY_Y + 2;
+    // Title, gap, text, gap, keys
+    int h = (UI_LH + 5) + UI_LH / 2;
+    wrap_text(REBOOT_TEXT, 0, &h, UI_COLS - 4, FB_CLEAR);
+    h += UI_LH / 2 + UI_LH + 3;
+    fb_fill(0, y0, FB_W, h, FB_BLACK);
+    fb_rect(x0, y0, w, h, FB_WHITE);
+    fb_fill(x0, y0, w, UI_LH + 2, FB_WHITE);
+
+    char buf[48];
+    snprintf(buf, sizeof buf, "Reboot %s?", target_name());
+    ui_cells(1, y0 + 1, UI_COLS - 2, buf, FB_BLACK, FB_CLEAR);
+    int y = y0 + UI_LH + 5 + UI_LH / 2;
+    wrap_text(REBOOT_TEXT, 2, &y, UI_COLS - 4, FB_WHITE);
+    y += UI_LH / 2;
+    ui_cells(2, y, UI_COLS - 4, "Y: reboot    N or Esc: not now", FB_WHITE, FB_CLEAR);
 }
 
 // --- picking a node -------------------------------------------------------------
@@ -1085,6 +1121,8 @@ void ui_settings_draw(void) {
 
     if (confirming)
         draw_confirm();
+    if (confirming_reboot)
+        draw_confirm_reboot();
     if (picking)
         draw_pick();
 }
@@ -1163,10 +1201,24 @@ static void confirm_key(const kbd_event_t *ev) {
     }
 }
 
+static void confirm_reboot_key(const kbd_event_t *ev) {
+    if (ev->key == 'y' || ev->key == 'Y') {
+        confirming_reboot = false;
+        if (!mesh_edit_reboot())
+            notice = "Not sent: the node isn't connected.";
+    } else if (ev->key == 'n' || ev->key == 'N' || ev->key == KBD_ESC) {
+        confirming_reboot = false;
+    }
+}
+
 bool ui_settings_key(const kbd_event_t *ev) {
     notice = NULL;
     if (confirming) {
         confirm_key(ev);
+        return true;
+    }
+    if (confirming_reboot) {
+        confirm_reboot_key(ev);
         return true;
     }
     if (picking) {
@@ -1215,6 +1267,11 @@ bool ui_settings_key(const kbd_event_t *ev) {
                 notice = "Busy: wait for it to finish first.";
             else
                 start_pick();
+        } else if (f == A_REBOOT) {
+            if (mesh_link_conn() == MESH_CONN_UP)
+                confirming_reboot = true;
+            else
+                notice = "Not connected to the node.";
         } else if (f == A_FETCH) {
             if (!mesh_edit_fetch())
                 notice = "Not connected to our node.";
