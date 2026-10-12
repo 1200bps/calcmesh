@@ -151,7 +151,9 @@ Bluetooth) are edited on a copy: changed fields get a `*` and show what they
 were, and nothing goes to the node until "Write changes to the node", which
 lists them and asks for `Y`. They go out as admin messages to our own node in
 one edit transaction; the node saves them and restarts, and calcmesh reads
-everything back and says whether it all took. calcmesh's own settings take
+everything back and says whether it all took. "Reboot the node", at the end
+of our own node's settings, restarts it after a `Y` (for when the node's
+firmware hangs) and waits for it to come back. calcmesh's own settings take
 effect at once and are saved to the SD card.
 
 The top row, "Settings of", picks another node to manage over the mesh
@@ -167,7 +169,7 @@ base64 under our own node's settings, so you can paste it there.
 Position (F3) plots every node that has shared a position as a point on a
 blank, north-up plane around our own node (a hollow square), labelled with
 short names and fading with time since heard; there are no maps. Arrows
-pan, `+`/`-` zoom, `0` or Home fits everyone back in, `n`/`p` (or
+pan, `+`/`-` zoom, `0` or Home fits everyone back in, `]`/`[` (or
 PgDn/PgUp) pick the next node outward from us, showing its distance,
 bearing and last-heard, `c` centres on it, Enter opens a DM with it and Esc
 drops it. Positions come from the node's NodeInfo dump and from

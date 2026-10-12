@@ -99,11 +99,11 @@ static int tour(const char *dir) {
     err |= shot(dir, "6-chat-dm");
     key("f3");
     err |= shot(dir, "19-position");
-    type("nnn");
+    type("]]]");
     err |= shot(dir, "20-position-selected");
     type("++");
     err |= shot(dir, "21-position-zoomed");
-    type("0pppp");
+    type("0[[[[");
     err |= shot(dir, "22-position-far");
     key("esc");
     key("f1");
@@ -156,6 +156,18 @@ static int tour(const char *dir) {
     fake_link_stats.syncs++;
     mesh_edit_poll();
     err |= shot(dir, "17-settings-result");
+    mesh_edit_ack();
+    // Reboot: the last of our node's rows, seven above the last one
+    key("end");
+    for (int i = 0; i < 7; i++)
+        key("up");
+    err |= shot(dir, "45-settings-reboot");
+    key("enter");
+    err |= shot(dir, "46-settings-reboot-confirm");
+    type("y");
+    err |= shot(dir, "47-settings-rebooting");
+    fake_link_stats.syncs++;
+    mesh_edit_poll();
     mesh_edit_ack();
     fake_link_state = MESH_LINK_WAKING;
     fake_node_silent = true;

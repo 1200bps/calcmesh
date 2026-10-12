@@ -74,6 +74,12 @@ typedef enum {
 // Write the dirty sections. False (and nothing sent) if there are none, or
 // the link isn't up (no node, still syncing, or desktop mode has it).
 bool mesh_edit_write(void);
+// Ask our own node to reboot, then follow it through the restart as after
+// a write (RESTARTING, then DONE or NO_RESTART). False (and nothing sent)
+// for another node, with edits pending, or if the link isn't up.
+bool mesh_edit_reboot(void);
+// The last RESTARTING was mesh_edit_reboot()'s, not a write's.
+bool mesh_edit_rebooting(void);
 // Call regularly: follows the node through its restart.
 void mesh_edit_poll(void);
 mesh_edit_state_t mesh_edit_state(void);
@@ -89,3 +95,5 @@ void mesh_edit_ack(void);
 #define MESH_EDIT_RESYNC_MS 15000
 // Give up waiting for it after this long.
 #define MESH_EDIT_TIMEOUT_MS 90000
+// How long the node waits before a reboot we ask for
+#define MESH_EDIT_REBOOT_SECS 2
