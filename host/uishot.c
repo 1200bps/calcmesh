@@ -15,6 +15,7 @@
 #include "fb.h"
 #include "nodedb.h"
 #include "mesh/nodeedit.h"
+#include "mesh/trace.h"
 #include "meshtastic/mesh.pb.h"
 #include "png.h"
 #include "metsched.h"
@@ -363,6 +364,40 @@ static int tour(const char *dir) {
     type("[[[[");
     key("home");
     err |= shot(dir, "48-metrics-history-3h");
+
+    // Traceroute (49 on): K7 Mobile, three hops out, and back by another
+    // way through a relay that didn't say who it was
+    scene_load();
+    key("f1"), key("home");
+    for (int i = 0; i < 6; i++)
+        key("down");
+    type("t");
+    fake_ms += 9000;
+    err |= shot(dir, "49-trace-waiting");
+    {
+        static meshtastic_RouteDiscovery rd;
+        memset(&rd, 0, sizeof rd);
+        rd.route_count = 2;
+        rd.route[0] = scene_node(0), rd.route[1] = scene_node(5);
+        rd.snr_towards_count = 3;
+        rd.snr_towards[0] = 37, rd.snr_towards[1] = -14, rd.snr_towards[2] = 22;
+        rd.route_back_count = 2;
+        rd.route_back[0] = MESH_TRACE_UNKNOWN, rd.route_back[1] = scene_node(0);
+        rd.snr_back_count = 3;
+        rd.snr_back[0] = MESH_TRACE_SNR_UNKNOWN, rd.snr_back[1] = -9, rd.snr_back[2] = 36;
+        fake_ms += 3400;
+        mesh_trace_answer(fake_trace_id, fake_trace_to, &rd);
+    }
+    fake_ms += 5000;
+    err |= shot(dir, "50-trace-answered");
+    // The next one down never answers
+    key("esc"), key("down"), key("down");
+    type("t");
+    err |= shot(dir, "51-trace-too-soon");
+    fake_ms += MESH_TRACE_GAP_MS;
+    type("t");
+    fake_ms += 4 * MESH_TRACE_HOP_MS;
+    err |= shot(dir, "52-trace-no-answer");
     return err;
 }
 

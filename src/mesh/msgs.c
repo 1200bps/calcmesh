@@ -301,7 +301,7 @@ void mesh_msgs_set_status(mesh_msg_t *m, mesh_msg_status_t status, uint8_t error
         observer->updated(m, observer->ctx);
 }
 
-static const char *routing_error_name(uint8_t e) {
+const char *mesh_routing_error_name(uint8_t e) {
     switch (e) {
     case meshtastic_Routing_Error_NO_ROUTE:
         return "no route";
@@ -347,7 +347,7 @@ const char *mesh_msgs_status_name(const mesh_msg_t *m) {
     case MESH_MSG_DELIVERED:
         return "delivered";
     case MESH_MSG_FAILED:
-        snprintf(buf, sizeof buf, "failed: %s", routing_error_name(m->error));
+        snprintf(buf, sizeof buf, "failed: %s", mesh_routing_error_name(m->error));
         return buf;
     default:
         return "?";

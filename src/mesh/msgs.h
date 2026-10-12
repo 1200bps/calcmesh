@@ -112,6 +112,8 @@ mesh_conv_t mesh_msgs_conv_of(const mesh_msg_t *m);
 
 // "delivered", "failed: no route", ...: short text for a status line.
 const char *mesh_msgs_status_name(const mesh_msg_t *m);
+// A meshtastic_Routing_Error in a few words ("no route", "no key for node")
+const char *mesh_routing_error_name(uint8_t e);
 
 // Print a message on one line (stdout), with sender names from mesh_db.
 void mesh_msgs_print(const mesh_msg_t *m);

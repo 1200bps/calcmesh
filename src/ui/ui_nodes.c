@@ -1,6 +1,6 @@
 // Nodes tab: everyone in mesh_db, our own node first, then favourites, then
 // most recently heard. Enter opens a DM with the selected node; i asks it for
-// its NodeInfo. Nodes our node no longer lists (kept from earlier, or from the
+// its NodeInfo; t traceroutes it (ui_trace.c). Nodes our node no longer lists (kept from earlier, or from the
 // SD card) are drawn grey.
 
 #include <stdio.h>
@@ -102,6 +102,10 @@ static void row(int y, const mesh_node_t *n, bool selected) {
 }
 
 void ui_nodes_draw(void) {
+    if (ui_trace_active()) {
+        ui_trace_draw();
+        return;
+    }
     int n = sort();
     int y = UI_BODY_Y + 1;
 
@@ -150,6 +154,8 @@ static void ask_nodeinfo(void) {
 }
 
 bool ui_nodes_key(const kbd_event_t *ev) {
+    if (ui_trace_active())
+        return ui_trace_key(ev);
     bool had_notice = notice[0];
     notice[0] = '\0';
     int n = sort();
@@ -165,6 +171,10 @@ bool ui_nodes_key(const kbd_event_t *ev) {
     }
     if (ev->key == 'i' || ev->key == 'I') {
         ask_nodeinfo();
+        return true;
+    }
+    if ((ev->key == 't' || ev->key == 'T') && sel_num != mesh_db.my_node_num) {
+        ui_trace_open(sel_num);
         return true;
     }
     return had_notice;

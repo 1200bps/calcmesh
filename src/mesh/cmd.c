@@ -10,6 +10,7 @@
 #include "metrics.h"
 #include "msgs.h"
 #include "nodedb.h"
+#include "trace.h"
 
 #define MSGS_DEFAULT 10
 
@@ -198,6 +199,36 @@ bool mesh_cmd_run(char *line) {
                    mesh_metrics_kind_name(k), who);
         else
             printf("not sent: not connected to the node\n");
+    } else if (strcmp(cmd, "trace") == 0) {
+        char *who = word(&rest);
+        if (!who) {
+            const mesh_trace_t *t = mesh_trace_latest();
+            if (t)
+                mesh_trace_print(t);
+            else
+                printf("usage: trace <node>\n");
+            return true;
+        }
+        uint32_t node = mesh_cmd_parse_node(who);
+        if (!node) {
+            printf("unknown node '%s'\n", who);
+            return true;
+        }
+        switch (mesh_trace_send(node)) {
+        case TRACE_SENT:
+            printf("tracing; the route prints when the answer comes ('trace' shows it again)\n");
+            break;
+        case TRACE_TOO_SOON:
+            printf("not sent: our node takes one traceroute per 30 s; try in %lus\n",
+                   (unsigned long)((mesh_trace_wait_ms() + 999) / 1000));
+            break;
+        case TRACE_BAD_NODE:
+            printf("can't trace our own node\n");
+            break;
+        default:
+            printf("not sent: not connected to the node\n");
+            break;
+        }
     } else {
         // Not ours: put back the blank word() cut at, so the caller sees
         // the whole line.
@@ -217,5 +248,6 @@ void mesh_cmd_help(void) {
            "nodes                  node and channel tables\n"
            "metrics [node]         telemetry we have from a node (default: ours)\n"
            "telreq <node> [what]   ask a node for device, env, power or local\n"
-           "                       stats (transmits unless it's our own node)\n");
+           "                       stats (transmits unless it's our own node)\n"
+           "trace [node]           traceroute a node (transmits), or show the last\n");
 }
