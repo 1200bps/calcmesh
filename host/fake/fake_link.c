@@ -204,3 +204,19 @@ bool mesh_link_send_nodeinfo_req(uint32_t to) {
 uint32_t mesh_link_nodeinfo_asked(uint32_t node) {
     return node && node == fake_nodeinfo_to ? (nodeinfo_ms ? nodeinfo_ms : 1) : 0;
 }
+
+// Traceroute: counted; the test answers through trace.h itself.
+int fake_trace_sent;
+uint32_t fake_trace_to, fake_trace_id;
+bool mesh_link_send_traceroute(uint32_t to, uint32_t *id, uint8_t *hops) {
+    if (fake_link_state != MESH_LINK_READY)
+        return false;
+    fake_trace_sent++;
+    fake_trace_to = to;
+    fake_trace_id = 0x7000 + (uint32_t)fake_trace_sent;
+    if (id)
+        *id = fake_trace_id;
+    if (hops)
+        *hops = 3;
+    return true;
+}

@@ -13,6 +13,7 @@
 #include "nodedb.h"
 #include "nodeedit.h"
 #include "remoteadmin.h"
+#include "trace.h"
 #include "meshtastic/admin.pb.h"
 #include "pb_decode.h"
 #include "pb_encode.h"
@@ -1585,6 +1586,153 @@ static void test_no_key(void) {
     CHECK(mesh_db_find(TROPO)->has_key);
 }
 
+static meshtastic_FromRadio fr_trace(uint32_t from, uint32_t request_id,
+                                     const meshtastic_RouteDiscovery *rd) {
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_packet_tag;
+    meshtastic_MeshPacket *p = &fr.packet;
+    p->from = from;
+    p->to = ME;
+    p->id = request_id ^ 0x7777;
+    p->which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    p->decoded.portnum = meshtastic_PortNum_TRACEROUTE_APP;
+    p->decoded.request_id = request_id;
+    pb_ostream_t os = pb_ostream_from_buffer(p->decoded.payload.bytes,
+                                             sizeof p->decoded.payload.bytes);
+    CHECK(pb_encode(&os, meshtastic_RouteDiscovery_fields, rd));
+    p->decoded.payload.size = (pb_size_t)os.bytes_written;
+    return fr;
+}
+
+static void test_trace(void) {
+    link_up();
+    mesh_trace_clear();
+    node_read();
+    const uint32_t HILL = 0x11111111, RELAY = 0x22222222;
+
+    // Not to ourselves
+    CHECK(mesh_trace_send(ME) == TRACE_BAD_NODE);
+    CHECK(mesh_trace_send(MESH_ADDR_BROADCAST) == TRACE_BAD_NODE);
+
+    // One packet: empty RouteDiscovery, want_response, no ack, not PKI, at
+    // the hop limit
+    packets = 0;
+    CHECK(mesh_trace_send(HILL) == TRACE_SENT);
+    node_read();
+    CHECK(packets == 1 && last_packet.to == HILL);
+    CHECK(last_packet.decoded.portnum == meshtastic_PortNum_TRACEROUTE_APP);
+    CHECK(last_packet.decoded.want_response && !last_packet.want_ack);
+    CHECK(!last_packet.pki_encrypted && last_packet.hop_limit == 3);
+    CHECK(last_packet.decoded.payload.size == 0);
+    uint32_t id = last_packet.id;
+    const mesh_trace_t *t = mesh_trace_find(HILL);
+    CHECK(t && t->state == TRACE_WAITING && t->wait_ms == 4 * MESH_TRACE_HOP_MS);
+    CHECK(mesh_trace_latest() == t);
+
+    // Our node takes one per 30 s
+    CHECK(mesh_trace_send(RELAY) == TRACE_TOO_SOON);
+    CHECK(mesh_trace_wait_ms() == MESH_TRACE_GAP_MS);
+    node_read();
+    CHECK(packets == 1);
+
+    // Someone else's answer, or an answer to another id, doesn't count
+    meshtastic_RouteDiscovery rd = meshtastic_RouteDiscovery_init_zero;
+    rd.route_count = 1;
+    rd.route[0] = RELAY;
+    rd.snr_towards_count = 2;
+    rd.snr_towards[0] = 25, rd.snr_towards[1] = -30;
+    rd.route_back_count = 2;
+    rd.route_back[0] = MESH_TRACE_UNKNOWN, rd.route_back[1] = RELAY;
+    rd.snr_back_count = 3;
+    rd.snr_back[0] = MESH_TRACE_SNR_UNKNOWN, rd.snr_back[1] = 8, rd.snr_back[2] = 41;
+    deliver(fr_trace(RELAY, id, &rd));
+    deliver(fr_trace(HILL, id + 1, &rd));
+    CHECK(t->state == TRACE_WAITING);
+    advance(2500);
+    deliver(fr_trace(HILL, id, &rd));
+    CHECK(t->state == TRACE_DONE && t->took_ms == 2500);
+    CHECK(t->n_out == 1 && t->out[0] == RELAY && t->snr_out[0] == 25 && t->snr_out[1] == -30);
+    CHECK(t->back_known && t->n_back == 2 && t->back[0] == MESH_TRACE_UNKNOWN);
+    CHECK(t->snr_back[0] == MESH_TRACE_SNR_UNKNOWN && t->snr_back[2] == 41);
+
+    // Older firmware: no way back, and SNRs that don't line up are unknown
+    advance(MESH_TRACE_GAP_MS);
+    CHECK(mesh_trace_wait_ms() == 0);
+    CHECK(mesh_trace_send(HILL) == TRACE_SENT);
+    node_read();
+    id = last_packet.id;
+    CHECK(mesh_trace_find(HILL) == t && t->state == TRACE_WAITING);
+    meshtastic_RouteDiscovery old = meshtastic_RouteDiscovery_init_zero;
+    old.route_count = 2;
+    old.route[0] = RELAY, old.route[1] = 0x33333333;
+    old.snr_towards_count = 1;
+    old.snr_towards[0] = 12;
+    deliver(fr_trace(HILL, id, &old));
+    CHECK(t->state == TRACE_DONE && t->n_out == 2 && !t->back_known);
+    CHECK(t->snr_out[0] == MESH_TRACE_SNR_UNKNOWN && t->snr_out[2] == MESH_TRACE_SNR_UNKNOWN);
+
+    // A routing error ends it; an ack doesn't
+    advance(MESH_TRACE_GAP_MS);
+    CHECK(mesh_trace_send(RELAY) == TRACE_SENT);
+    node_read();
+    id = last_packet.id;
+    deliver(fr_routing(ME, id, meshtastic_Routing_Error_NONE));
+    CHECK(mesh_trace_find(RELAY)->state == TRACE_WAITING);
+    deliver(fr_routing(ME, id, meshtastic_Routing_Error_NO_CHANNEL));
+    CHECK(mesh_trace_find(RELAY)->state == TRACE_FAILED);
+    CHECK(mesh_trace_find(RELAY)->error == meshtastic_Routing_Error_NO_CHANNEL);
+
+    // Our node's rate limit notice, should ours ever disagree with it
+    advance(MESH_TRACE_GAP_MS);
+    CHECK(mesh_trace_send(RELAY) == TRACE_SENT);
+    node_read();
+    id = last_packet.id;
+    meshtastic_FromRadio n = meshtastic_FromRadio_init_zero;
+    n.which_payload_variant = meshtastic_FromRadio_clientNotification_tag;
+    n.clientNotification.has_reply_id = true;
+    n.clientNotification.reply_id = id;
+    strcpy(n.clientNotification.message, "TraceRoute can only be sent once every 30 seconds");
+    deliver(n);
+    t = mesh_trace_find(RELAY);
+    CHECK(t->state == TRACE_FAILED && t->error == TRACE_ERR_REFUSED);
+    CHECK(strncmp(t->note, "TraceRoute can only", 19) == 0);
+
+    // Silence: given up on after its time, but a late answer still counts
+    advance(MESH_TRACE_GAP_MS);
+    CHECK(mesh_trace_send(HILL) == TRACE_SENT);
+    node_read();
+    id = last_packet.id;
+    advance(4 * MESH_TRACE_HOP_MS - 10);
+    t = mesh_trace_find(HILL);
+    CHECK(t->state == TRACE_WAITING);
+    advance(10);
+    t = mesh_trace_find(HILL);
+    CHECK(t->state == TRACE_FAILED && t->error == TRACE_ERR_NO_ANSWER);
+    deliver(fr_trace(HILL, id, &rd));
+    CHECK(t->state == TRACE_DONE);
+
+    // The console
+    advance(MESH_TRACE_GAP_MS);
+    char line[] = "trace !11111111";
+    packets = 0;
+    CHECK(mesh_cmd_run(line));
+    node_read();
+    CHECK(packets == 1 && last_packet.decoded.portnum == meshtastic_PortNum_TRACEROUTE_APP);
+
+    // A full table forgets the one traced longest ago
+    for (int i = 0; i < MESH_TRACES; i++) {
+        advance(MESH_TRACE_GAP_MS);
+        CHECK(mesh_trace_send(0x60000000 + (uint32_t)i) == TRACE_SENT);
+    }
+    CHECK(mesh_trace_find(HILL) == NULL && mesh_trace_find(0x60000000) != NULL);
+
+    // Not connected
+    mesh_link_set_passive(true);
+    advance(MESH_TRACE_GAP_MS);
+    CHECK(mesh_trace_send(HILL) == TRACE_NO_LINK);
+    node_read();
+}
+
 int main(void) {
     test_frame_resync();
     test_noise();
@@ -1601,6 +1749,7 @@ int main(void) {
     test_metrics();
     test_heard_nodes();
     test_no_key();
+    test_trace();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

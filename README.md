@@ -172,6 +172,17 @@ asker at most once in 12 hours, and our node will usually have asked already
 when it first heard it. Its own NodeInfo broadcast (every 3 hours by
 default) brings the key just as well.
 
+`t` on the Nodes tab traceroutes the selected node and opens a page with the
+route out to it and the route its answer took back, one node per row, with
+the SNR each hop was heard at (`?` for a relay that didn't add itself). The
+request isn't PKI-encrypted (relays have to add themselves to it), so it
+works without the node's key, and goes out on the channel we last heard the
+node on. calcmesh waits 20 s per hop for the answer and still takes one that
+comes late. Firmware 2.7 takes at most one traceroute every 30 s from its
+clients, so `t` waits that long between them and the page counts down. On
+the console, `trace <node>` does the same and prints the route when the
+answer comes; `trace` alone prints the last one again.
+
 On the Settings tab, Left/Right change a value and Enter edits a name (Enter
 again to keep it, Esc to drop it). The node's settings (names, role, LoRa
 region, preset, hop limit and power, channel names, position, power saving,

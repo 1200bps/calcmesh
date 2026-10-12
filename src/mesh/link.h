@@ -123,6 +123,11 @@ bool mesh_link_send_admin_to(uint32_t to, const struct _meshtastic_AdminMessage 
 // it never reaches the radio. *id (if given) gets the packet id.
 bool mesh_link_send_telemetry_req(uint32_t to, pb_size_t variant, uint32_t *id);
 
+// Send a traceroute request (trace.h keeps track of it): an empty
+// RouteDiscovery with want_response, on the channel we last heard the node
+// on, at our hop limit. *id gets the packet id, *hops the hop limit.
+bool mesh_link_send_traceroute(uint32_t to, uint32_t *id, uint8_t *hops);
+
 // Ask a node for its NodeInfo (name, hardware, public key), sending ours
 // with it, on the channel we last heard it on. Our node can't send a node
 // DMs, metrics requests or remote admin until it has that node's key, and

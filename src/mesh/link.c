@@ -9,6 +9,7 @@
 #include "nodedb.h"
 #include "pb_decode.h"
 #include "pb_encode.h"
+#include "trace.h"
 
 #include "meshtastic/admin.pb.h"
 #include "meshtastic/mesh.pb.h"
@@ -489,8 +490,9 @@ static void handle_routing(const meshtastic_MeshPacket *p) {
              p->from != mesh_db.my_node_num)
         key_missing(p->from);
     if (!m && !admin) {
-        // Perhaps a telemetry request's
+        // Perhaps a telemetry request's or a traceroute's
         mesh_metrics_routing(req, p->from, (uint8_t)r.error_reason);
+        mesh_trace_routing(req, p->from, (uint8_t)r.error_reason);
         return;
     }
     if (admin) {
@@ -555,6 +557,20 @@ static void handle_telemetry(const meshtastic_MeshPacket *p) {
     mesh_metrics_answer(p->decoded.request_id, p->from);
 }
 
+static void handle_traceroute(const meshtastic_MeshPacket *p) {
+    static meshtastic_RouteDiscovery rd;
+    memset(&rd, 0, sizeof rd);
+    pb_istream_t is = pb_istream_from_buffer(p->decoded.payload.bytes, p->decoded.payload.size);
+    if (!pb_decode(&is, meshtastic_RouteDiscovery_fields, &rd))
+        return;
+    if (p->decoded.request_id)
+        mesh_trace_answer(p->decoded.request_id, p->from, &rd);
+    else if (p->from != mesh_db.my_node_num)
+        // Our node answers by itself
+        printf("[trace] !%08lx traced us, via %u relays\n", (unsigned long)p->from,
+               (unsigned)rd.route_count);
+}
+
 static void handle_packet(const meshtastic_MeshPacket *p) {
     if (p->has_rx_time && p->rx_time) {
         anchor_epoch = p->rx_time;
@@ -585,6 +601,9 @@ static void handle_packet(const meshtastic_MeshPacket *p) {
         break;
     case meshtastic_PortNum_TELEMETRY_APP:
         handle_telemetry(p);
+        break;
+    case meshtastic_PortNum_TRACEROUTE_APP:
+        handle_traceroute(p);
         break;
     case meshtastic_PortNum_ADMIN_APP: {
         static meshtastic_AdminMessage a; // ~500 bytes
@@ -687,6 +706,8 @@ static void handle_from_radio(const meshtastic_FromRadio *fr) {
     }
     case meshtastic_FromRadio_clientNotification_tag:
         printf("[node notice] %s\n", fr->clientNotification.message);
+        if (fr->clientNotification.has_reply_id)
+            mesh_trace_notice(fr->clientNotification.reply_id, fr->clientNotification.message);
         break;
     default:
         // fileInfo, deviceuiConfig, region_presets
@@ -955,4 +976,32 @@ const char *mesh_link_send_result_name(mesh_send_result_t r) {
     default:
         return "?";
     }
+}
+
+bool mesh_link_send_traceroute(uint32_t to, uint32_t *id, uint8_t *hops) {
+    if (state != MESH_LINK_READY || !mesh_db.my_node_num || !to || to == MESH_ADDR_BROADCAST ||
+        to == mesh_db.my_node_num)
+        return false;
+    memset(&to_radio, 0, sizeof to_radio);
+    to_radio.which_payload_variant = meshtastic_ToRadio_packet_tag;
+    meshtastic_MeshPacket *p = &to_radio.packet;
+    p->to = to;
+    // Never PKI (relays have to add themselves), so it needs a channel the
+    // node is on: the one we last heard it on
+    const mesh_node_t *n = mesh_db_find(to);
+    p->channel = n ? n->channel : 0;
+    p->id = next_packet_id();
+    p->hop_limit = mesh_db.hop_limit ? mesh_db.hop_limit : DEFAULT_HOP_LIMIT;
+    p->which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    p->decoded.portnum = meshtastic_PortNum_TRACEROUTE_APP;
+    p->decoded.want_response = true;
+    // An empty RouteDiscovery encodes to nothing
+    p->decoded.payload.size = 0;
+    if (!send_to_radio())
+        return false;
+    if (id)
+        *id = p->id;
+    if (hops)
+        *hops = (uint8_t)p->hop_limit;
+    return true;
 }

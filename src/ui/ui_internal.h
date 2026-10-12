@@ -48,6 +48,12 @@ void ui_list_fix(ui_list_t *l, int count, int rows);
 void ui_nodes_draw(void);
 bool ui_nodes_key(const kbd_event_t *ev);
 
+// Traceroute page, opened over the Nodes tab (ui_trace.c)
+void ui_trace_open(uint32_t node); // traces it too, unless one is under way
+bool ui_trace_active(void);
+void ui_trace_draw(void);
+bool ui_trace_key(const kbd_event_t *ev);
+
 void ui_chats_draw(void);
 bool ui_chats_key(const kbd_event_t *ev);
 void ui_chats_open(mesh_conv_t c); // switch to the Chats tab, in conversation c
