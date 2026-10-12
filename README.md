@@ -1,5 +1,5 @@
 # calcmesh
-Meshtastic client for PicoCalc
+### a slopject for some teeming meshing masses
 
 Talks to a Meshtastic node over the protobuf serial API on uart0
 (GP0 = TX, GP1 = RX, 115200 8N1).
