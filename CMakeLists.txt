@@ -49,6 +49,7 @@ add_executable(calcmesh
     src/sd/metlog.c
     src/sd/metview.c
     src/sd/msglog.c
+    src/sd/nodecache.c
     src/sd/settings.c
     src/sd/sd.c
     src/sd/sd_card.c

@@ -647,6 +647,50 @@ static void test_metrics_tab(void) {
     press(KBD_HOME);
 }
 
+// Nodes our node no longer lists draw grey; i asks the selected node for its
+// NodeInfo; a DM refused for want of a key says so
+static void test_nodes_tab(void) {
+    ui_init();
+    scene_load();
+    mesh_node_t *n = mesh_db_find(scene_node(0));
+    n->cached = true;
+    n->has_key = false;
+    press(KBD_F1);
+    ui_render();
+    press(KBD_DOWN); // past our own node
+    uint32_t sel = 0;
+    int before = fake_nodeinfo_sent;
+    type("i");
+    CHECK(fake_nodeinfo_sent == before + 1);
+    sel = fake_nodeinfo_to;
+    CHECK(sel != 0 && sel != SCENE_ME);
+    ui_render();
+    // the notice goes with the next key, which still does its job
+    press(KBD_DOWN);
+    ui_render();
+    // Not connected: nothing sent
+    fake_link_state = MESH_LINK_PASSIVE;
+    type("i");
+    CHECK(fake_nodeinfo_sent == before + 1);
+    fake_link_state = MESH_LINK_READY;
+    ui_render();
+
+    // A DM to it that our node refused (39): the conversation says why
+    press(KBD_UP);
+    press(KBD_ENTER);
+    CHECK(ui_tab() == UI_TAB_CHATS);
+    type("hello");
+    press(KBD_ENTER);
+    mesh_conv_t dm = MESH_CONV_DM(sel);
+    mesh_msg_t *m = (mesh_msg_t *)last(dm);
+    CHECK(m && m->status == MESH_MSG_QUEUED);
+    if (m)
+        mesh_msgs_set_status(m, MESH_MSG_FAILED,
+                             meshtastic_Routing_Error_PKI_SEND_FAIL_PUBLIC_KEY);
+    ui_render();
+    CHECK(m && strcmp(mesh_msgs_status_name(m), "failed: no key for node") == 0);
+}
+
 static void test_stress(void) {
     ui_init();
     scene_load();
@@ -698,6 +742,7 @@ int main(void) {
     test_remote_tab();
     test_position();
     test_metrics_tab();
+    test_nodes_tab();
     test_stress();
     if (failures)
         fprintf(stderr, "%d failure(s)\n", failures);

@@ -170,6 +170,14 @@ target_link_libraries(test_metsched ui_fake)
 target_compile_options(test_metsched PRIVATE ${WARN})
 add_test(NAME metsched COMMAND test_metsched)
 
+# The node list on the SD card
+add_executable(test_nodecache test_nodecache.c ramdisk.c
+    ${REPO_ROOT}/src/sd/nodecache.c ${REPO_ROOT}/src/mesh/nodedb.c)
+target_include_directories(test_nodecache PRIVATE ${REPO_ROOT}/src ${REPO_ROOT}/src/mesh .)
+target_link_libraries(test_nodecache fatfs_host meshtastic_protos)
+target_compile_options(test_nodecache PRIVATE ${WARN})
+add_test(NAME nodecache COMMAND test_nodecache)
+
 # The graphs' history, read back from the metrics log
 add_executable(test_metview test_metview.c)
 target_link_libraries(test_metview ui_fake)

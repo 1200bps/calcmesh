@@ -42,7 +42,15 @@ typedef struct {
     uint32_t admin_tx;        // admin messages sent
     uint32_t admin_errors;    // routing errors the node returned for them
     uint8_t admin_last_error; // meshtastic_Routing_Error of the latest
+    uint32_t nodeinfo_tx;     // NodeInfo requests sent
 } mesh_link_stats_t;
+
+// How often to ask our node for its node list again, once connected
+#ifndef MESH_NODES_REFRESH_MS
+#define MESH_NODES_REFRESH_MS (30u * 60 * 1000)
+#endif
+// Least time between NodeInfo requests to one node made by themselves
+#define MESH_NODEINFO_RETRY_MS (10u * 60 * 1000)
 
 typedef enum {
     MESH_SEND_OK,
@@ -114,6 +122,18 @@ bool mesh_link_send_admin_to(uint32_t to, const struct _meshtastic_AdminMessage 
 // Telemetry with the same request_id (metrics.h keeps it). To our own node
 // it never reaches the radio. *id (if given) gets the packet id.
 bool mesh_link_send_telemetry_req(uint32_t to, pb_size_t variant, uint32_t *id);
+
+// Ask a node for its NodeInfo (name, hardware, public key), sending ours
+// with it, on the channel we last heard it on. Our node can't send a node
+// DMs, metrics requests or remote admin until it has that node's key, and
+// refuses with routing error 39 (PKI_SEND_FAIL_PUBLIC_KEY); the link sends
+// this by itself when that happens (at most once per node per
+// MESH_NODEINFO_RETRY_MS). The answer, if it comes, is an ordinary NodeInfo
+// packet. Firmware 2.7 answers a given asker at most once in 12 hours and
+// skips it if it sent its NodeInfo in the last 10 minutes or so.
+bool mesh_link_send_nodeinfo_req(uint32_t to);
+// When we last asked that node (mesh_link_ms() clock), or 0 if not lately.
+uint32_t mesh_link_nodeinfo_asked(uint32_t node);
 
 // Admin messages that arrive (answers from other nodes), and routing results
 // (acks and errors) for admin messages we sent. error is a

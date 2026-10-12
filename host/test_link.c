@@ -1379,6 +1379,212 @@ static void test_metrics(void) {
     mesh_link_set_passive(false);
 }
 
+static meshtastic_FromRadio fr_nodeinfo(uint32_t from, uint8_t ch, const char *lname,
+                                        const char *sname, bool key) {
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_packet_tag;
+    meshtastic_MeshPacket *p = &fr.packet;
+    p->from = from;
+    p->to = MESH_ADDR_BROADCAST;
+    p->channel = ch;
+    p->id = from ^ 0x0e0e;
+    p->has_rx_time = true;
+    p->rx_time = 1700001000;
+    p->rx_snr = 4.5f;
+    p->hop_start = 7;
+    p->hop_limit = 4;
+    p->which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    p->decoded.portnum = meshtastic_PortNum_NODEINFO_APP;
+    meshtastic_User u = meshtastic_User_init_zero;
+    strcpy(u.id, "!bogus"); // firmware goes by the packet's from
+    strcpy(u.long_name, lname);
+    strcpy(u.short_name, sname);
+    u.hw_model = meshtastic_HardwareModel_HELTEC_V4;
+    if (key) {
+        u.public_key.size = 32;
+        memset(u.public_key.bytes, 0x5a, 32);
+    }
+    pb_ostream_t os = pb_ostream_from_buffer(p->decoded.payload.bytes,
+                                             sizeof p->decoded.payload.bytes);
+    CHECK(pb_encode(&os, meshtastic_User_fields, &u));
+    p->decoded.payload.size = (pb_size_t)os.bytes_written;
+    return fr;
+}
+
+// Nodes heard after the handshake join the table; the node list is asked
+// for again now and then; a re-handshake keeps what the node didn't list.
+static void test_heard_nodes(void) {
+#if MESH_MAX_NODES >= 8
+    link_up();
+    node_read();
+    const uint32_t TROPO = 0x44444444, FAR = 0x55555555;
+
+    // A text from a stranger (tropo, say) adds a bare entry
+    int before = mesh_db.node_count;
+    deliver(fr_text(TROPO, MESH_ADDR_BROADCAST, 1, 300, "cq cq"));
+    mesh_node_t *n = mesh_db_find(TROPO);
+    CHECK(mesh_db.node_count == before + 1);
+    CHECK(n && !n->has_user && !n->has_key && !n->cached);
+    CHECK(n && n->last_heard == 1700000100 && n->hops_away == 2 && n->channel == 1);
+    CHECK(n && n->snr == -7.5f);
+
+    // Its NodeInfo names it and brings its key
+    uint32_t v = mesh_db.nodes_version;
+    deliver(fr_nodeinfo(TROPO, 1, "Tropo Station", "TRO", true));
+    CHECK(n->has_user && strcmp(n->long_name, "Tropo Station") == 0);
+    CHECK(strcmp(n->short_name, "TRO") == 0 && strcmp(n->id, "!44444444") == 0);
+    CHECK(n->has_key && n->hops_away == 3 && n->last_heard == 1700001000);
+    CHECK(mesh_db.nodes_version != v);
+    // and one without a key (licensed, or old firmware) says so
+    deliver(fr_nodeinfo(FAR, 0, "Far Away", "FAR", false));
+    CHECK(mesh_db_find(FAR) && mesh_db_find(FAR)->has_user && !mesh_db_find(FAR)->has_key);
+    // Our own node's NodeInfo echoed back doesn't overwrite us
+    deliver(fr_nodeinfo(ME, 0, "Impostor", "IMP", true));
+    CHECK(strcmp(mesh_db_find(ME)->long_name, "Calcmesh Base") == 0);
+
+    // Half an hour on, the link asks for the node list again (nodes only)
+    // and stays READY meanwhile
+    advance(MESH_NODES_REFRESH_MS);
+    CHECK(node_read() == 69421);
+    CHECK(mesh_link_state() == MESH_LINK_READY);
+    CHECK(send_text(MESH_CONV_CHANNEL(0), "still sending") != NULL);
+    // The node's list has HILL, TROPO and us; MOB and FAR have dropped off
+    meshtastic_FromRadio fr = fr_node(ME, "Calcmesh Base", "CALC", 1700000000);
+    emit(&fr);
+    fr = fr_node(0x11111111, "Hilltop Router", "HILL", 1700000000);
+    fr.node_info.is_favorite = true;
+    emit(&fr);
+    fr = fr_node(TROPO, "Tropo Station", "TRO", 1700001000);
+    fr.node_info.user.public_key.size = 32;
+    emit(&fr);
+    // and FAR is heard while the list comes in, so the node has it again
+    fr = fr_text(FAR, MESH_ADDR_BROADCAST, 0, 301, "hi");
+    emit(&fr);
+    fr = fr_complete(69421);
+    emit(&fr);
+    flush_stream();
+    CHECK(mesh_link_state() == MESH_LINK_READY);
+    CHECK(mesh_db_find(0x11111111)->is_favorite && !mesh_db_find(0x11111111)->cached);
+    CHECK(mesh_db_find(TROPO)->has_key && !mesh_db_find(TROPO)->cached);
+    CHECK(!mesh_db_find(FAR)->cached);
+    const mesh_node_t *mob = mesh_db_find(0x33333333);
+    CHECK(mob && mob->cached && !mob->has_key && mob->has_user);
+    CHECK(mob && strcmp(mob->long_name, "Mobile") == 0);
+    // Heard again: back on the node's books (though without its key yet)
+    deliver(fr_text(0x33333333, MESH_ADDR_BROADCAST, 0, 302, "back"));
+    CHECK(!mob->cached);
+
+    // A refresh the node never finishes leaves nothing marked
+    advance(MESH_NODES_REFRESH_MS);
+    CHECK(node_read() == 69421);
+    advance(31000);
+    CHECK(!mesh_db_find(0x11111111)->cached);
+    CHECK(mesh_link_state() == MESH_LINK_READY);
+
+    // A full re-handshake (node rebooted) keeps the table; what the dump
+    // leaves out becomes cached
+    fr = (meshtastic_FromRadio)meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_rebooted_tag;
+    fr.rebooted = true;
+    deliver(fr);
+    advance(200);
+    uint32_t nonce = node_read();
+    fr = fr_my_info(ME, 2);
+    emit(&fr);
+    fr = fr_node(ME, "Calcmesh Base", "CALC", 1700000000);
+    emit(&fr);
+    // the table is still there while the dump comes in
+    flush_stream();
+    CHECK(mesh_db_find(TROPO) != NULL);
+    fr = fr_node(0x11111111, "Hilltop Router", "HILL", 1700000000);
+    emit(&fr);
+    fr = fr_complete(nonce);
+    emit(&fr);
+    flush_stream();
+    CHECK(mesh_link_state() == MESH_LINK_READY);
+    CHECK(mesh_db_find(TROPO) && mesh_db_find(TROPO)->cached && !mesh_db_find(TROPO)->has_key);
+    CHECK(!mesh_db_find(0x11111111)->cached);
+    CHECK(!mesh_db_find(0x11111111)->is_favorite); // the node didn't say so this time
+
+    // Hooked up to a different radio: its view replaces the old one
+    fr = (meshtastic_FromRadio)meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_rebooted_tag;
+    fr.rebooted = true;
+    deliver(fr);
+    advance(200);
+    nonce = node_read();
+    fr = fr_my_info(0x99999999, 1);
+    emit(&fr);
+    fr = fr_node(0x99999999, "Other Radio", "OTH", 1700000000);
+    emit(&fr);
+    fr = fr_complete(nonce);
+    emit(&fr);
+    flush_stream();
+    CHECK(mesh_db.node_count == 1 && mesh_db_find(TROPO) == NULL);
+#endif
+}
+
+// Routing error 39: our node has no key for the destination, so it won't
+// send DMs or requests there. The link asks that node for its NodeInfo.
+static void test_no_key(void) {
+    link_up();
+    node_read();
+    const uint32_t TROPO = 0x44444444;
+    deliver(fr_text(TROPO, MESH_ADDR_BROADCAST, 1, 400, "cq"));
+    CHECK(mesh_db_find(TROPO) && !mesh_db_find(TROPO)->has_key);
+
+    mesh_msg_t *m = send_text(MESH_CONV_DM(TROPO), "hello via tropo");
+    node_read();
+    uint32_t id = m->id;
+    packets = 0;
+    deliver(fr_routing(ME, id, meshtastic_Routing_Error_PKI_SEND_FAIL_PUBLIC_KEY));
+    CHECK(m->status == MESH_MSG_FAILED && m->error == 39);
+    node_read();
+    CHECK(packets == 1);
+    CHECK(last_packet.to == TROPO && last_packet.channel == 1);
+    CHECK(last_packet.decoded.portnum == meshtastic_PortNum_NODEINFO_APP);
+    CHECK(last_packet.decoded.want_response && !last_packet.pki_encrypted);
+    meshtastic_User u = meshtastic_User_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(last_packet.decoded.payload.bytes,
+                                             last_packet.decoded.payload.size);
+    CHECK(pb_decode(&is, meshtastic_User_fields, &u));
+    CHECK(strcmp(u.long_name, "Calcmesh Base") == 0);
+    CHECK(mesh_link_nodeinfo_asked(TROPO) != 0);
+    CHECK(mesh_link_stats()->nodeinfo_tx == 1);
+
+    // A metrics request refused the same way right after: not asked again
+    uint32_t req = 0;
+    CHECK(mesh_link_send_telemetry_req(TROPO, meshtastic_Telemetry_device_metrics_tag, &req));
+    node_read();
+    packets = 0;
+    deliver(fr_routing(ME, req, meshtastic_Routing_Error_PKI_SEND_FAIL_PUBLIC_KEY));
+    node_read();
+    CHECK(packets == 0);
+    // but after the retry interval it is
+    advance(MESH_NODEINFO_RETRY_MS);
+    node_read();
+    CHECK(mesh_link_send_telemetry_req(TROPO, meshtastic_Telemetry_device_metrics_tag, &req));
+    node_read();
+    packets = 0;
+    deliver(fr_routing(ME, req, meshtastic_Routing_Error_PKI_SEND_FAIL_PUBLIC_KEY));
+    node_read();
+    CHECK(packets == 1 && last_packet.decoded.portnum == meshtastic_PortNum_NODEINFO_APP);
+
+    // The far end couldn't decrypt ours (it lacks our key): send it ours
+    packets = 0;
+    m = send_text(MESH_CONV_DM(0x11111111), "hill?");
+    node_read();
+    packets = 0;
+    deliver(fr_routing(0x11111111, m->id, meshtastic_Routing_Error_PKI_UNKNOWN_PUBKEY));
+    node_read();
+    CHECK(packets == 1 && last_packet.to == 0x11111111 &&
+          last_packet.decoded.portnum == meshtastic_PortNum_NODEINFO_APP);
+
+    // Its answer brings the key
+    deliver(fr_nodeinfo(TROPO, 1, "Tropo Station", "TRO", true));
+    CHECK(mesh_db_find(TROPO)->has_key);
+}
+
 int main(void) {
     test_frame_resync();
     test_noise();
@@ -1393,6 +1599,8 @@ int main(void) {
     test_admin();
     test_remote_admin();
     test_metrics();
+    test_heard_nodes();
+    test_no_key();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

@@ -1,6 +1,14 @@
 // In-memory tables built from the node's want_config dump and kept current
 // from later FromRadio traffic: who we are, the mesh nodes we know about, and
 // the channel table.
+//
+// The node only sends its NodeDB during a handshake. After that, as the
+// official clients do, we follow the packets it passes on: any packet from a
+// node we don't know adds it, NodeInfo packets fill in its name and key, and
+// link.c asks for the node list again now and then (MESH_NODES_REFRESH_MS)
+// to catch what we missed. The table survives a re-handshake, and the SD
+// card keeps a copy (sd/nodecache.h); a node our node didn't list in its
+// latest dump is kept, marked cached.
 #pragma once
 
 #include <stdbool.h>
@@ -18,6 +26,7 @@
 #define MESH_MODULE_SLOTS 20
 
 #define MESH_HOPS_UNKNOWN 0xFF
+#define MESH_CHANNEL_UNKNOWN 0xFF // to mesh_db_heard(): leave it as it is
 #define MESH_BATTERY_UNKNOWN 0xFF
 #define MESH_BATTERY_POWERED 101 // firmware reports >100 for external power
 
@@ -34,7 +43,13 @@ typedef struct {
     bool has_position;
     bool via_mqtt;
     bool is_favorite;
-    bool has_key; // we have its public key, so it can be sent PKI (remote admin)
+    bool has_key; // our node has its public key, so it can be sent DMs, metrics
+                  // requests and remote admin (all PKI-encrypted)
+    bool cached;  // our node didn't list it last time it sent its node list,
+                  // and we haven't heard it since: kept from earlier (or from
+                  // the SD card); our node knows nothing about it
+    bool dumped;  // seen in (or heard during) the node list being received
+    uint8_t channel; // channel index we hear it on, for asking it for NodeInfo
     float snr;
     uint32_t last_heard; // node's clock, epoch seconds; 0 if never
     int32_t latitude_i;  // 1e-7 degrees
@@ -88,12 +103,20 @@ typedef struct {
 
     uint16_t node_count;
     uint32_t evicted; // nodes pushed out because the table was full
+    uint32_t nodes_owner;   // node number of the radio that told us about them
+    uint32_t nodes_version; // bumped whenever a node's entry changes
     mesh_node_t nodes[MESH_MAX_NODES];
 } mesh_db_t;
 
 extern mesh_db_t mesh_db;
 
 void mesh_db_clear(void);
+
+// A handshake's dump is starting (full: everything but the node table is
+// forgotten; nodes_only: just the node list) and has ended. Nodes the dump
+// didn't list, and that weren't heard meanwhile, become cached.
+void mesh_db_dump_begin(bool nodes_only);
+void mesh_db_dump_end(void);
 void mesh_db_set_my_info(const meshtastic_MyNodeInfo *mi);
 void mesh_db_set_metadata(const meshtastic_DeviceMetadata *md);
 void mesh_db_set_config(const meshtastic_Config *cfg);
@@ -110,9 +133,20 @@ mesh_node_t *mesh_db_find(uint32_t num);
 // sends with no fix), changes nothing. Returns the node, or NULL.
 mesh_node_t *mesh_db_set_position(uint32_t num, const meshtastic_Position *pos);
 
-// Any packet from a node, received at rx_time (node's clock): moves its
-// last_heard forward. Unknown nodes are left alone.
-void mesh_db_heard(uint32_t num, uint32_t rx_time);
+// Any decoded packet from another node, as our node's NodeDB::updateFrom
+// treats it: adds the node if we didn't know it, and keeps its last heard
+// time (rx_time, node's clock; 0 if none), SNR, hops away (MESH_HOPS_UNKNOWN
+// if the packet can't say) and channel (or MESH_CHANNEL_UNKNOWN) current. Returns the node, or NULL if
+// the table is full of nodes that can't be evicted.
+mesh_node_t *mesh_db_heard(uint32_t num, uint32_t rx_time, float snr, uint8_t hops,
+                           uint8_t channel, bool via_mqtt);
+
+// A NODEINFO_APP packet from a node: its name, hardware, role and public key.
+mesh_node_t *mesh_db_set_user(uint32_t num, const meshtastic_User *u);
+
+// A node from the SD card copy, added as cached if we don't know it already
+// (whatever we have is newer). NULL if not added.
+mesh_node_t *mesh_db_restore_node(const mesh_node_t *saved);
 
 // Name to show for a channel: its own name, or for an unnamed primary the
 // modem preset name ("LongFast"), as the official clients do.

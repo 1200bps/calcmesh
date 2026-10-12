@@ -1,15 +1,45 @@
 #include "nodedb.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
 mesh_db_t mesh_db;
 
+#define BROADCAST 0xFFFFFFFFu
+
 #define COPY_STR(dst, src) snprintf((dst), sizeof(dst), "%s", (src))
 
 void mesh_db_clear(void) { memset(&mesh_db, 0, sizeof mesh_db); }
 
+void mesh_db_dump_begin(bool nodes_only) {
+    // Everything ahead of the node table comes again in a full dump
+    if (!nodes_only)
+        memset(&mesh_db, 0, offsetof(mesh_db_t, node_count));
+    for (int i = 0; i < mesh_db.node_count; i++)
+        mesh_db.nodes[i].dumped = false;
+}
+
+void mesh_db_dump_end(void) {
+    for (int i = 0; i < mesh_db.node_count; i++) {
+        mesh_node_t *n = &mesh_db.nodes[i];
+        if (n->dumped || n->cached)
+            continue;
+        // Whatever our node knew about it, it doesn't now
+        n->cached = true;
+        n->has_key = false;
+        n->is_favorite = false;
+        mesh_db.nodes_version++;
+    }
+}
+
 void mesh_db_set_my_info(const meshtastic_MyNodeInfo *mi) {
+    // A different radio: what we knew came from the other one's point of view
+    if (mesh_db.nodes_owner && mesh_db.nodes_owner != mi->my_node_num) {
+        mesh_db.node_count = 0;
+        mesh_db.nodes_version++;
+    }
+    mesh_db.nodes_owner = mi->my_node_num;
     mesh_db.my_node_num = mi->my_node_num;
     mesh_db.reboot_count = mi->reboot_count;
     mesh_db.nodedb_count = mi->nodedb_count;
@@ -115,6 +145,18 @@ static bool copy_position(mesh_node_t *n, const meshtastic_Position *p) {
     return true;
 }
 
+static void set_user(mesh_node_t *n, const meshtastic_User *u) {
+    n->has_user = true;
+    COPY_STR(n->id, u->id);
+    if (!n->id[0])
+        snprintf(n->id, sizeof n->id, "!%08lx", (unsigned long)n->num);
+    COPY_STR(n->long_name, u->long_name);
+    COPY_STR(n->short_name, u->short_name);
+    n->hw_model = (uint16_t)u->hw_model;
+    n->role = (uint8_t)u->role;
+    n->has_key = u->public_key.size == 32;
+}
+
 mesh_node_t *mesh_db_upsert_node(const meshtastic_NodeInfo *ni) {
     mesh_node_t *n = mesh_db_find(ni->num);
     if (!n) {
@@ -124,15 +166,8 @@ mesh_node_t *mesh_db_upsert_node(const meshtastic_NodeInfo *ni) {
     }
     memset(n, 0, sizeof *n);
     n->num = ni->num;
-    if (ni->has_user) {
-        n->has_user = true;
-        COPY_STR(n->id, ni->user.id);
-        COPY_STR(n->long_name, ni->user.long_name);
-        COPY_STR(n->short_name, ni->user.short_name);
-        n->hw_model = (uint16_t)ni->user.hw_model;
-        n->role = (uint8_t)ni->user.role;
-        n->has_key = ni->user.public_key.size == 32;
-    }
+    if (ni->has_user)
+        set_user(n, &ni->user);
     if (!n->id[0])
         snprintf(n->id, sizeof n->id, "!%08lx", (unsigned long)ni->num);
     n->hops_away = ni->has_hops_away ? ni->hops_away : MESH_HOPS_UNKNOWN;
@@ -151,6 +186,75 @@ mesh_node_t *mesh_db_upsert_node(const meshtastic_NodeInfo *ni) {
     n->is_favorite = ni->is_favorite;
     n->snr = ni->snr;
     n->last_heard = ni->last_heard;
+    n->channel = ni->channel;
+    n->dumped = true;
+    mesh_db.nodes_version++;
+    return n;
+}
+
+static mesh_node_t *find_or_add(uint32_t num) {
+    mesh_node_t *n = mesh_db_find(num);
+    if (n)
+        return n;
+    meshtastic_NodeInfo ni = meshtastic_NodeInfo_init_zero;
+    ni.num = num;
+    return mesh_db_upsert_node(&ni);
+}
+
+mesh_node_t *mesh_db_heard(uint32_t num, uint32_t rx_time, float snr, uint8_t hops,
+                           uint8_t channel, bool via_mqtt) {
+    if (!num || num == BROADCAST || num == mesh_db.my_node_num)
+        return NULL;
+    mesh_node_t *n = mesh_db_find(num);
+    if (!n) {
+        if (!(n = find_or_add(num)))
+            return NULL;
+        n->hops_away = MESH_HOPS_UNKNOWN;
+    }
+    // Our node has an entry for it now, if one without its key
+    n->cached = false;
+    n->dumped = true;
+    if (rx_time > n->last_heard)
+        n->last_heard = rx_time;
+    if (snr != 0)
+        n->snr = snr;
+    if (hops != MESH_HOPS_UNKNOWN)
+        n->hops_away = hops;
+    if (channel != MESH_CHANNEL_UNKNOWN)
+        n->channel = channel;
+    n->via_mqtt = via_mqtt;
+    mesh_db.nodes_version++;
+    return n;
+}
+
+mesh_node_t *mesh_db_set_user(uint32_t num, const meshtastic_User *u) {
+    if (!num || num == BROADCAST)
+        return NULL;
+    mesh_node_t *n = find_or_add(num);
+    if (!n)
+        return NULL;
+    set_user(n, u);
+    // Firmware derives the id from the number whatever the packet says
+    snprintf(n->id, sizeof n->id, "!%08lx", (unsigned long)num);
+    n->cached = false;
+    n->dumped = true;
+    mesh_db.nodes_version++;
+    return n;
+}
+
+mesh_node_t *mesh_db_restore_node(const mesh_node_t *saved) {
+    if (!saved->num || saved->num == BROADCAST || mesh_db_find(saved->num) ||
+        (mesh_db.my_node_num && saved->num == mesh_db.my_node_num))
+        return NULL;
+    mesh_node_t *n = alloc_node();
+    if (!n)
+        return NULL;
+    *n = *saved;
+    n->cached = true;
+    n->dumped = false;
+    n->has_key = false;
+    n->is_favorite = false;
+    mesh_db.nodes_version++;
     return n;
 }
 
@@ -158,21 +262,12 @@ mesh_node_t *mesh_db_set_position(uint32_t num, const meshtastic_Position *pos) 
     mesh_node_t probe = {0};
     if (!copy_position(&probe, pos))
         return NULL;
-    mesh_node_t *n = mesh_db_find(num);
-    if (!n) {
-        meshtastic_NodeInfo ni = meshtastic_NodeInfo_init_zero;
-        ni.num = num;
-        if (!(n = mesh_db_upsert_node(&ni)))
-            return NULL;
-    }
+    mesh_node_t *n = find_or_add(num);
+    if (!n)
+        return NULL;
     copy_position(n, pos);
+    mesh_db.nodes_version++;
     return n;
-}
-
-void mesh_db_heard(uint32_t num, uint32_t rx_time) {
-    mesh_node_t *n = mesh_db_find(num);
-    if (n && rx_time > n->last_heard)
-        n->last_heard = rx_time;
 }
 
 const char *mesh_db_preset_name(uint8_t preset) {

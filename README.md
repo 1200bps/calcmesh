@@ -101,6 +101,12 @@ up. Desktop mode and its idle timeout (`desktop.mode`, `desktop.idle_min`)
 and console key echo (`console.key_echo`) are kept there too; all of them can
 be changed on the Settings tab.
 
+The node list is kept in `/calcmesh/nodes.tsv` (columns in
+`src/sd/nodecache.h`), saved every 10 minutes while it changes and read back
+at boot, so nodes heard in earlier sessions stay listed (grey, as above)
+after a reboot or after the node itself forgets them. Only nodes heard
+through the same radio come back.
+
 No card, or a card pulled out, and calcmesh carries on in RAM; put one in
 and logging resumes (it's on spi0, GP16-19, with card detect on GP22).
 `sd` on the console shows the state.
@@ -143,6 +149,28 @@ the HP 48/49/50 menu row.
 In the UI: F1-F5 or Tab / Shift-Tab switch tabs; arrows,
 PgUp/PgDn, Home/End move; Enter opens a chat (on a node: a DM with it) or
 sends what you typed; Esc leaves a chat.
+
+## The node list
+
+The node sends its NodeDB only during the handshake. After that calcmesh
+follows the packets it passes on, as the phone apps do: a packet from a node
+it doesn't know adds it, and NodeInfo packets fill in names and public keys.
+Every 30 minutes it asks the node for its node list again (nodes only; the
+link stays up) to catch anything it missed. A re-handshake (the node
+rebooted, say) keeps the list; nodes the node no longer has are kept and
+drawn grey on the Nodes tab until they're heard again.
+
+Our node sends DMs, metrics requests and remote admin only PKI-encrypted, so
+it needs the other node's public key, which arrives in that node's NodeInfo.
+A node heard only by its text or telemetry (over a tropo opening, say) has no
+key yet, and our node refuses with routing error 39 (`PKI_SEND_FAIL_PUBLIC_KEY`);
+firmware 2.7 never falls back to the channel key. When that happens calcmesh
+sends the node our NodeInfo and asks for its own (at most every 10 minutes
+per node), and the chat or Metrics page says so. `i` on the Nodes tab asks the
+selected node by hand. The node may not answer: firmware answers a given
+asker at most once in 12 hours, and our node will usually have asked already
+when it first heard it. Its own NodeInfo broadcast (every 3 hours by
+default) brings the key just as well.
 
 On the Settings tab, Left/Right change a value and Enter edits a name (Enter
 again to keep it, Esc to drop it). The node's settings (names, role, LoRa
@@ -249,6 +277,7 @@ to convert a row to its pixel format.
 - `src/sd/settings.[ch]` – client settings in `/calcmesh/settings.txt` (portable; host-tested)
 - `src/sd/metlog.[ch]` – every node's telemetry, logged to the card (portable; host-tested)
 - `src/sd/metview.[ch]` – the log read back for the Metrics graphs, per window (portable; host-tested)
+- `src/sd/nodecache.[ch]` – the node list kept on the card (portable; host-tested)
 - `src/sd/sd.[ch]` – card detect, mount, retries; `sd_card.c` – SPI SD driver for FatFs
 - `src/ui/fb.[ch]` – framebuffer, drawing primitives, changed-row tracking
 - `src/ui/ui*.c` – tab bar, Nodes, Chats, Position, Metrics and Settings views, compose line

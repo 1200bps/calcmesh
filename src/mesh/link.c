@@ -24,6 +24,11 @@
 // Python client heartbeats every 300 s.
 #define HEARTBEAT_MS 300000
 
+// The node only sends its node list during a handshake; ask for it again
+// (nodes only, MESH_NODES_REFRESH_MS) to catch whatever we missed since.
+// Give up on a refresh that hasn't finished in REFRESH_STALL_MS.
+#define REFRESH_STALL_MS 30000
+
 // What the firmware uses when the LoRa config leaves hop_limit unset.
 #define DEFAULT_HOP_LIMIT 3
 
@@ -47,6 +52,21 @@ static uint32_t packet_id;
 #define ADMIN_IDS 8
 static uint32_t admin_ids[ADMIN_IDS];
 static unsigned admin_next;
+// Packets to single nodes we sent lately, so a routing error saying our node
+// has no key for the destination can tell which node that was (a ring)
+#define UNICAST_IDS 8
+static struct {
+    uint32_t id, to;
+} unicast[UNICAST_IDS];
+static unsigned unicast_next;
+// Nodes we asked for their NodeInfo lately, and when (our clock)
+#define NODEINFO_ASKED 8
+static struct {
+    uint32_t node, ms;
+} nodeinfo_asked[NODEINFO_ASKED];
+static unsigned nodeinfo_next;
+static bool refreshing; // a nodes-only dump is coming in
+static uint32_t refresh_ms; // when the node list last came, or was asked for
 // Node clock anchor: epoch seconds seen at our clock's anchor_ms.
 static uint32_t anchor_epoch;
 static uint32_t anchor_ms;
@@ -100,6 +120,12 @@ static bool send_to_radio(void) {
     frame_header(buf, os.bytes_written);
     io.write(buf, FRAME_HEADER_LEN + os.bytes_written, io.ctx);
     last_tx_ms = now();
+    if (to_radio.which_payload_variant == meshtastic_ToRadio_packet_tag &&
+        to_radio.packet.to != MESH_ADDR_BROADCAST && to_radio.packet.to != mesh_db.my_node_num) {
+        unicast[unicast_next % UNICAST_IDS].id = to_radio.packet.id;
+        unicast[unicast_next % UNICAST_IDS].to = to_radio.packet.to;
+        unicast_next++;
+    }
     return true;
 }
 
@@ -114,8 +140,22 @@ static void send_want_config(void) {
     send_to_radio();
     stats.requests++;
     db_cleared = false;
+    refreshing = false;
     printf("[link] want_config sent, nonce %lu\n", (unsigned long)nonce);
     set_state(MESH_LINK_CONFIGURING);
+}
+
+// The node list again, while we stay READY: the node pauses passing on
+// packets while it sends it (they wait in its queue), but takes ours as usual.
+static void send_nodes_refresh(void) {
+    memset(&to_radio, 0, sizeof to_radio);
+    to_radio.which_payload_variant = meshtastic_ToRadio_want_config_id_tag;
+    to_radio.want_config_id = NONCE_ONLY_NODES;
+    if (!send_to_radio())
+        return;
+    mesh_db_dump_begin(true);
+    refreshing = true;
+    refresh_ms = now();
 }
 
 static void send_heartbeat(void) {
@@ -136,6 +176,9 @@ void mesh_link_init(const mesh_link_io_t *io_) {
     packet_id = io.seed * 2654435761u ^ now();
     anchor_epoch = 0;
     memset(admin_ids, 0, sizeof admin_ids);
+    memset(unicast, 0, sizeof unicast);
+    memset(nodeinfo_asked, 0, sizeof nodeinfo_asked);
+    refreshing = false;
     mesh_msgs_set_clock(msgs_clock);
     last_rx_ms = last_tx_ms = now();
     mesh_db_clear();
@@ -152,6 +195,7 @@ void mesh_link_request_config(void) {
 
 void mesh_link_set_passive(bool passive) {
     if (passive && state != MESH_LINK_PASSIVE) {
+        refreshing = false;
         set_state(MESH_LINK_PASSIVE);
     } else if (!passive && state == MESH_LINK_PASSIVE) {
         mesh_link_request_config();
@@ -268,12 +312,78 @@ static const char *log_level(meshtastic_LogRecord_Level l) {
 
 // The first record of our dump means the node accepted the request; only
 // then throw away the old tables, so a request the node never answers
-// leaves the previous picture intact.
+// leaves the previous picture intact. The node table stays: what the dump
+// doesn't list is kept as cached (nodedb.h).
 static void begin_dump(void) {
     if (state == MESH_LINK_CONFIGURING && !db_cleared) {
-        mesh_db_clear();
+        mesh_db_dump_begin(false);
         db_cleared = true;
     }
+}
+
+static uint32_t next_packet_id(void);
+
+static uint32_t unicast_dest(uint32_t id) {
+    for (int i = 0; i < UNICAST_IDS; i++)
+        if (id && unicast[i].id == id)
+            return unicast[i].to;
+    return 0;
+}
+
+static int asked_slot(uint32_t node) {
+    for (int i = 0; i < NODEINFO_ASKED; i++)
+        if (node && nodeinfo_asked[i].node == node)
+            return i;
+    return -1;
+}
+
+uint32_t mesh_link_nodeinfo_asked(uint32_t node) {
+    int i = asked_slot(node);
+    return i < 0 ? 0 : nodeinfo_asked[i].ms ? nodeinfo_asked[i].ms : 1;
+}
+
+bool mesh_link_send_nodeinfo_req(uint32_t to) {
+    if (state != MESH_LINK_READY || !mesh_db.has_owner || !to || to == MESH_ADDR_BROADCAST ||
+        to == mesh_db.my_node_num)
+        return false;
+    memset(&to_radio, 0, sizeof to_radio);
+    to_radio.which_payload_variant = meshtastic_ToRadio_packet_tag;
+    meshtastic_MeshPacket *p = &to_radio.packet;
+    p->to = to;
+    // NodeInfo never goes PKI; it has to be on a channel the node is on
+    const mesh_node_t *n = mesh_db_find(to);
+    p->channel = n ? n->channel : 0;
+    p->id = next_packet_id();
+    p->hop_limit = mesh_db.hop_limit ? mesh_db.hop_limit : DEFAULT_HOP_LIMIT;
+    p->which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    p->decoded.portnum = meshtastic_PortNum_NODEINFO_APP;
+    p->decoded.want_response = true;
+    // Ours goes with it, key included, so it can send to us too
+    pb_ostream_t os = pb_ostream_from_buffer(p->decoded.payload.bytes,
+                                             sizeof p->decoded.payload.bytes);
+    if (!pb_encode(&os, meshtastic_User_fields, &mesh_db.owner))
+        return false;
+    p->decoded.payload.size = (pb_size_t)os.bytes_written;
+    if (!send_to_radio())
+        return false;
+    int slot = asked_slot(to);
+    if (slot < 0)
+        slot = (int)(nodeinfo_next++ % NODEINFO_ASKED);
+    nodeinfo_asked[slot].node = to;
+    nodeinfo_asked[slot].ms = now();
+    stats.nodeinfo_tx++;
+    printf("[link] asked !%08lx for its NodeInfo\n", (unsigned long)to);
+    return true;
+}
+
+// A send failed for want of a key: ours for the node (our node refused, 39)
+// or the node's for us (it couldn't decrypt, 35). Swapping NodeInfo fixes
+// either, if the node answers; once per node per NODEINFO_RETRY_MS.
+static void key_missing(uint32_t node) {
+    int i = asked_slot(node);
+    if (i >= 0 && now() - nodeinfo_asked[i].ms < MESH_NODEINFO_RETRY_MS)
+        return;
+    mesh_link_send_nodeinfo_req(node);
 }
 
 static void set_status(mesh_msg_t *m, mesh_msg_status_t st, uint8_t err) {
@@ -372,6 +482,12 @@ static void handle_routing(const meshtastic_MeshPacket *p) {
     if (!req || !pb_decode(&is, meshtastic_Routing_fields, &r) ||
         r.which_variant != meshtastic_Routing_error_reason_tag)
         return;
+    if (r.error_reason == meshtastic_Routing_Error_PKI_SEND_FAIL_PUBLIC_KEY &&
+        p->from == mesh_db.my_node_num)
+        key_missing(unicast_dest(req));
+    else if (r.error_reason == meshtastic_Routing_Error_PKI_UNKNOWN_PUBKEY &&
+             p->from != mesh_db.my_node_num)
+        key_missing(p->from);
     if (!m && !admin) {
         // Perhaps a telemetry request's
         mesh_metrics_routing(req, p->from, (uint8_t)r.error_reason);
@@ -407,6 +523,20 @@ static void handle_position(const meshtastic_MeshPacket *p) {
                pos.latitude_i / 1e7, pos.longitude_i / 1e7);
 }
 
+static void handle_nodeinfo(const meshtastic_MeshPacket *p) {
+    if (p->from == mesh_db.my_node_num)
+        return; // ours comes in the dump
+    static meshtastic_User u; // ~180 bytes
+    memset(&u, 0, sizeof u);
+    pb_istream_t is = pb_istream_from_buffer(p->decoded.payload.bytes, p->decoded.payload.size);
+    if (!pb_decode(&is, meshtastic_User_fields, &u))
+        return;
+    const mesh_node_t *n = mesh_db_set_user(p->from, &u);
+    if (n)
+        printf("[link] nodeinfo !%08lx %s (%s)%s\n", (unsigned long)p->from, n->long_name,
+               n->short_name, n->has_key ? "" : ", no key");
+}
+
 static void handle_telemetry(const meshtastic_MeshPacket *p) {
     static meshtastic_Telemetry t; // ~300 bytes
     memset(&t, 0, sizeof t);
@@ -435,9 +565,15 @@ static void handle_packet(const meshtastic_MeshPacket *p) {
                (unsigned long)p->from, (unsigned long)p->to, p->channel);
         return;
     }
-    if (p->has_rx_time && p->rx_time && p->from != mesh_db.my_node_num)
-        mesh_db_heard(p->from, p->rx_time);
+    if (p->from != mesh_db.my_node_num)
+        // A PKI packet comes in on channel 0 whichever channel the node uses
+        mesh_db_heard(p->from, p->has_rx_time ? p->rx_time : 0, p->rx_snr, hops_of(p),
+                      p->pki_encrypted ? MESH_CHANNEL_UNKNOWN : (uint8_t)p->channel,
+                      p->via_mqtt);
     switch (p->decoded.portnum) {
+    case meshtastic_PortNum_NODEINFO_APP:
+        handle_nodeinfo(p);
+        break;
     case meshtastic_PortNum_POSITION_APP:
         handle_position(p);
         break;
@@ -504,6 +640,12 @@ static void handle_from_radio(const meshtastic_FromRadio *fr) {
         mesh_db_set_module_config(&fr->moduleConfig);
         break;
     case meshtastic_FromRadio_config_complete_id_tag:
+        if (refreshing && fr->config_complete_id == NONCE_ONLY_NODES) {
+            refreshing = false;
+            mesh_db_dump_end();
+            printf("[link] node list refreshed: %u nodes\n", mesh_db.node_count);
+            break;
+        }
         if (state != MESH_LINK_CONFIGURING || fr->config_complete_id != nonce) {
             printf("[link] ignoring stale config_complete %lu\n",
                    (unsigned long)fr->config_complete_id);
@@ -511,7 +653,9 @@ static void handle_from_radio(const meshtastic_FromRadio *fr) {
         }
         printf("[link] config complete: %u nodes, %lu frames\n",
                mesh_db.node_count, (unsigned long)stats.frames);
+        mesh_db_dump_end();
         set_state(MESH_LINK_READY);
+        refresh_ms = now();
         stats.syncs++;
         if (on_ready)
             on_ready();
@@ -613,7 +757,14 @@ void mesh_link_poll(void) {
         break;
     }
     case MESH_LINK_READY:
-        if (t - last_tx_ms >= HEARTBEAT_MS)
+        if (refreshing && t - refresh_ms >= REFRESH_STALL_MS) {
+            // Unfinished: nothing becomes cached on a partial list
+            printf("[link] node list refresh didn't finish\n");
+            refreshing = false;
+        }
+        if (!refreshing && t - refresh_ms >= MESH_NODES_REFRESH_MS)
+            send_nodes_refresh();
+        else if (t - last_tx_ms >= HEARTBEAT_MS)
             send_heartbeat();
         break;
     default:
