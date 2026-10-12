@@ -179,14 +179,17 @@ the newest numbers are; our node first, then favorites, then nodes that have
 sent metrics. Enter opens a node's page: device metrics, environment and
 power sensors, and local stats (packet counts, relays, dupes, noise floor),
 each with how old it is, and graphs of battery, channel use and temperature
-over the last hours. `D`, `E`, `P` and `L` ask the node for a fresh set of
+over the last 3h, 12h, 24h, 3d or 7d (`[` and `]` step through; the choice
+is kept in the settings as `ui.metrics.window`). `D`, `E`, `P` and `L` ask the node for a fresh set of
 that kind: our own node answers over the serial link, any other node with one
 packet each way on the primary channel (PKI when our node has its key).
 Local stats from other nodes only come by asking. Left/Right step through the
 nodes, Esc goes back. Metrics arrive from broadcasts, our node's own reports
 to its client (every minute), and the NodeInfo dump; calcmesh keeps the
 latest of each kind and a history point every 10 minutes at most, for 16
-nodes, and that survives a resync with the node (not a reboot). On the
+nodes, and that survives a resync with the node. The graphs read the card's
+metrics log (below) back too, so a reboot doesn't start them over, a bit at
+a time from the main loop; until that's done they show what's in RAM. On the
 console, `metrics [node]` prints what's kept and `telreq <node> [device|env|
 power|local]` asks.
 
@@ -199,8 +202,9 @@ can take a while), waits 90 s for each answer, and asks once more five
 minutes later for one that got none; a request made by hand goes first. The
 schedule is at the bottom of the node's page. Schedules are kept in the settings (`metrics.sched1`-`4`), and the
 first run after boot comes 2 minutes after the node connects. Telemetry from
-a scheduled node, asked for or not (but not our own node's unasked minute-by-
-minute reports), and a line for each kind a run got nothing for, go to
+every node, asked for or not (our own node's unasked minute-by-minute
+reports once per 10 minutes), and a line for each kind a run got nothing
+for, go to
 `/calcmesh/metrics/<node>-<kind>.tsv` on the card, one tab-separated file
 per node and kind (`src/sd/metlog.h` lists the columns). Local stats add
 graphs of packets heard per hour, nodes online and noise floor, and device
@@ -241,7 +245,8 @@ to convert a row to its pixel format.
 - `src/mesh/cmd.[ch]` – console commands shared by the firmware and `meshcat`
 - `src/sd/msglog.[ch]` – message history on the card (portable; host-tested on a RAM disk)
 - `src/sd/settings.[ch]` – client settings in `/calcmesh/settings.txt` (portable; host-tested)
-- `src/sd/metlog.[ch]` – the scheduled nodes' telemetry, logged to the card (portable; host-tested)
+- `src/sd/metlog.[ch]` – every node's telemetry, logged to the card (portable; host-tested)
+- `src/sd/metview.[ch]` – the log read back for the Metrics graphs, per window (portable; host-tested)
 - `src/sd/sd.[ch]` – card detect, mount, retries; `sd_card.c` – SPI SD driver for FatFs
 - `src/ui/fb.[ch]` – framebuffer, drawing primitives, changed-row tracking
 - `src/ui/ui*.c` – tab bar, Nodes, Chats, Position, Metrics and Settings views, compose line

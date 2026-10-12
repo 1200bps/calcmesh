@@ -9,6 +9,7 @@
 #include "mesh/link.h"
 #include "mesh/msgs.h"
 #include "sd/metlog.h"
+#include "sd/metview.h"
 #include "sd/msglog.h"
 #include "sd/settings.h"
 
@@ -43,6 +44,7 @@ static const char *fs_name(void) {
 
 static void unmount(void) {
     metlog_set_online(false);
+    metview_set_online(false);
     msglog_close();
     f_unmount("");
     sd_card_eject();
@@ -68,6 +70,7 @@ static bool mount(bool restore) {
             state = SD_READY;
             error_reported = false;
             metlog_set_online(true);
+            metview_set_online(true);
             return true;
         }
     } else if (!error_reported) {
@@ -158,6 +161,8 @@ void sd_task(void) {
     if (msglog_pending() && msglog_flush() < 0)
         goto card_error;
     if (metlog_pending() && metlog_flush() < 0)
+        goto card_error;
+    if (metview_pending() && metview_task() < 0)
         goto card_error;
     return;
 

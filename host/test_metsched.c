@@ -195,20 +195,30 @@ static void test_run(void) {
     const met_point_t *p = mesh_metrics_point(e, e->nhist - 1);
     CHECK(p->rxph == 600 && p->noise == -108 && p->online == 12);
 
-    // Telemetry heard unasked from a scheduled node is logged as heard;
-    // our own node's isn't
+    // Telemetry heard unasked is logged as heard; our own node's, which
+    // comes every minute or so, once per ten minutes
     while (metlog_pending())
         metlog_flush();
     int before = lines(read_file(METLOG_DIR "/0badf00d-local.tsv"));
     answer_local(9500, 1400, -108); // nobody's waiting: unasked
     fake_tel_to = SCENE_ME;
     CHECK(metsched_set(SCENE_ME, MET_BIT(MET_LOCAL), 60));
-    answer_local(9500, 1400, -108);
+    for (int i = 0; i < 12; i++, fake_epoch += 60)
+        answer_local(9500 + (uint32_t)i * 60, 1400, -108);
     while (metlog_pending())
         metlog_flush();
     const char *l2 = read_file(METLOG_DIR "/0badf00d-local.tsv");
     CHECK(lines(l2) == before + 1 && strstr(l2, "\theard\t9500\t"));
-    CHECK(read_file(METLOG_DIR "/a1b2c3d4-local.tsv") == NULL);
+    const char *mine = read_file(METLOG_DIR "/a1b2c3d4-local.tsv");
+    // (after the header, two answers to requests by hand from earlier)
+    CHECK(mine && lines(mine) == 5 && strstr(mine, "\theard\t9500\t") &&
+          strstr(mine, "\theard\t10100\t"));
+    // ... and a node with no schedule is logged too
+    fake_tel_to = 0x00c0ffee;
+    answer_local(800, 10, -100);
+    while (metlog_pending())
+        metlog_flush();
+    CHECK(read_file(METLOG_DIR "/00c0ffee-local.tsv") != NULL);
 }
 
 static void test_settings(void) {
